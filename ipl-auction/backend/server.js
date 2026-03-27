@@ -39,10 +39,6 @@ app.use(cors({
 app.use(express.json());
 app.use(express.urlencoded({ extended:true }));
 
-mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/ipl_auction')
-  .then(() => console.log('✅ MongoDB connected'))
-  .catch(err => console.error('❌ MongoDB error:', err));
-
 app.set('io', io);
 
 // ── Routes ────────────────────────────────────────────────────────────
@@ -51,7 +47,22 @@ app.use('/api/rooms',                  require('./routes/rooms'));
 app.use('/api/rooms/:roomCode/auction',require('./routes/roomAuction'));
 
 // Health check
-app.get('/api/health', (_,res) => res.json({ status:'OK', timestamp: new Date() }));
+app.get('/api/health', (_, res) => {
+  const readyState = mongoose.connection.readyState;
+  const dbStateByCode = {
+    0: 'disconnected',
+    1: 'connected',
+    2: 'connecting',
+    3: 'disconnecting',
+  };
+  const dbState = dbStateByCode[readyState] || 'unknown';
+  const ok = readyState === 1;
+  return res.status(ok ? 200 : 503).json({
+    status: ok ? 'OK' : 'DEGRADED',
+    db: dbState,
+    timestamp: new Date(),
+  });
+});
 
 // ── Sockets ───────────────────────────────────────────────────────────
 require('./sockets/auctionSocket')(io);
@@ -69,8 +80,32 @@ async function seedPlayersIfEmpty() {
     }
   } catch(e) { console.error('Seed error:', e.message); }
 }
-mongoose.connection.once('open', seedPlayersIfEmpty);
 
 const PORT = process.env.PORT || 5000;
-server.listen(PORT, () => console.log(`🚀 Server on port ${PORT}`));
-module.exports = { app, io };
+
+async function connectDatabase() {
+  if (!process.env.MONGODB_URI) {
+    throw new Error('Missing required environment variable: MONGODB_URI');
+  }
+  console.log('Connecting to MongoDB...');
+  await mongoose.connect(process.env.MONGODB_URI, {
+    useNewUrlParser: true,
+    useUnifiedTopology: true,
+  });
+  console.log('MongoDB connected');
+}
+
+async function startServer() {
+  try {
+    await connectDatabase();
+    await seedPlayersIfEmpty();
+    server.listen(PORT, () => console.log(`🚀 Server on port ${PORT}`));
+  } catch (err) {
+    console.error('MongoDB connection error:', err);
+    process.exit(1);
+  }
+}
+
+startServer();
+
+module.exports = { app, io, startServer };
