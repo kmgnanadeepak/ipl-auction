@@ -127,6 +127,7 @@ async function triggerBotBids(io, roomCode, { reason } = {}) {
     .populate('auction.currentPlayer')
     .populate('participants.squad');
   if (!room || room.auction.status !== 'active') return;
+  if (!room.aiEnabled) return;
   const player = room.auction.currentPlayer;
   if (!player) return;
 
@@ -151,6 +152,9 @@ async function triggerBotBids(io, roomCode, { reason } = {}) {
     ^ (cur * 97);
   const rnd = mulberry32(seed);
 
+  const playersDone = (room.auction?.soldPlayers?.length || 0) + (room.auction?.unsoldPlayers?.length || 0);
+  const stage = playersDone < 40 ? 'early' : playersDone < 160 ? 'mid' : 'late';
+
   const candidates = bots
     .filter(b => b.sessionId !== winSess)
     .map(b => {
@@ -162,29 +166,49 @@ async function triggerBotBids(io, roomCode, { reason } = {}) {
 
       const teamPlayers = b.squad || [];
       const roleBoost = targetRoleBoost(player.role, teamPlayers);
+      const budget = Number(b.budget || room.config?.budget || 10000);
+      const rem = Number(b.remainingBudget || 0);
+      const squadSize = Number(room.config?.squadSize || 15);
+      const slotsLeft = Math.max(0, squadSize - (teamPlayers?.length || 0));
+
+      // Keep reserve for remaining slots (simple but effective)
+      const reservePerSlot = stage === 'late' ? 120 : stage === 'mid' ? 160 : 220;
+      const minReserve = Math.max(0, (slotsLeft - 1) * reservePerSlot);
+      const spendable = Math.max(0, rem - minReserve);
 
       let capMult = 1.0;
-      if (kind === 'aggressive_star') capMult = star ? 1.22 : 1.05;
-      if (kind === 'budget_conscious') capMult = star ? 0.98 : 0.88;
-      if (kind === 'role_balancer') capMult = 1.02 + roleBoost;
-      if (kind === 'wildcard') capMult = 0.95 + (rnd() * 0.35);
+      if (kind === 'aggressive_star') capMult = star ? 1.10 : 0.98;
+      if (kind === 'budget_conscious') capMult = star ? 0.92 : 0.82;
+      if (kind === 'role_balancer') capMult = 0.95 + roleBoost;
+      if (kind === 'wildcard') capMult = 0.88 + (rnd() * 0.28);
 
-      const clutch = timeLeftSec <= 5 ? 0.06 : timeLeftSec <= 10 ? 0.03 : 0;
-      const cap = Math.min(
-        b.remainingBudget || 0,
-        Math.max(nextBid, (mv * (capMult + clutch)) * (0.92 + (aggression * 0.16)))
-      );
+      // Realistic expected range: value anchored to mv + role need, bounded by purse pressure.
+      const clutch = timeLeftSec <= 5 ? 0.03 : timeLeftSec <= 10 ? 0.015 : 0;
+      const stageMult = stage === 'early' ? 1.02 : stage === 'mid' ? 0.98 : 0.92;
+      const needMult = 1 + (roleBoost * 0.85);
+      const valueCap = mv * capMult * needMult * stageMult * (0.96 + clutch);
+
+      // Hard stop limits: never dump full purse into one player
+      const maxPctOfBudget = star ? (stage === 'early' ? 0.32 : 0.28) : 0.22;
+      const hardCap = budget * maxPctOfBudget;
+
+      const cap = Math.min(rem, spendable, hardCap, Math.max(nextBid, valueCap));
 
       const affordability = (b.remainingBudget || 0) >= nextBid;
       const tooExpensive = nextBid > cap;
+
+      // Human-like dropouts: some bids are skipped even if affordable/value-positive
+      const skipChance = clamp01((thrift * 0.12) + (stage === 'late' ? 0.10 : 0.05));
+
       const baseChance =
-        0.55 +
-        (star ? 0.18 : 0) +
-        (roleBoost * 0.9) +
-        (aggression * 0.25) -
-        (thrift * 0.20);
+        0.42 +
+        (star ? 0.12 : 0) +
+        (roleBoost * 0.75) +
+        (aggression * 0.22) -
+        (thrift * 0.26);
       const chance = clamp01(baseChance + ((rnd() - 0.5) * randomness));
-      const willBid = affordability && !tooExpensive && rnd() < chance;
+
+      const willBid = affordability && !tooExpensive && rnd() < chance && rnd() > skipChance;
 
       let step = inc;
       if (kind === 'aggressive_star' && star && rnd() < 0.45) step = inc * 2;

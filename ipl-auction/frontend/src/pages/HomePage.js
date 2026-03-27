@@ -50,6 +50,7 @@ export default function HomePage() {
   const [modal, setModal]   = useState(null); // 'create' | 'join'
   const [loading, setLoading] = useState(false);
   const [error,   setError]   = useState('');
+  const [aiCreate, setAiCreate] = useState(false);
 
   // Create Room form
   const [createForm, setCreateForm] = useState({ roomName: '', teamName: '' });
@@ -60,13 +61,13 @@ export default function HomePage() {
   const closeModal= ()  => { setModal(null); setError(''); };
 
   /* ── CREATE ─────────────────────────────────────────────────── */
-  const handleCreate = async (e) => {
+  const handleCreate = async (e, { aiEnabled = false } = {}) => {
     e.preventDefault();
     if (!createForm.roomName.trim()) return setError('Room name is required');
     if (!createForm.teamName.trim()) return setError('Your team name is required');
     setError(''); setLoading(true);
     try {
-      const { data } = await roomsAPI.create({ ...createForm, sessionId });
+      const { data } = await roomsAPI.create({ ...createForm, sessionId, aiEnabled });
       enterRoom(data.room, createForm.teamName.trim());
       toast.success(`Room ${data.roomCode} created! You are the host.`);
       navigate('/lobby');
@@ -201,7 +202,7 @@ export default function HomePage() {
       {/* ═══════════════ CREATE ROOM MODAL ═══════════════════════ */}
       {modal === 'create' && (
         <Modal title="🏏 Create New Room" onClose={closeModal}>
-          <form onSubmit={handleCreate} className="space-y-4">
+          <form onSubmit={(e) => handleCreate(e, { aiEnabled: aiCreate })} className="space-y-4">
             <Err msg={error} />
             <Field label="Room Name" value={createForm.roomName}
               onChange={v => setCreateForm(f => ({ ...f, roomName: v }))}
@@ -209,16 +210,44 @@ export default function HomePage() {
             <Field label="Your Team Name" value={createForm.teamName}
               onChange={v => setCreateForm(f => ({ ...f, teamName: v }))}
               placeholder="e.g. Chennai Kings" />
+            <div className="flex items-center justify-between gap-3 p-3 rounded-xl bg-gray-800/50 border border-gray-700/60">
+              <div className="min-w-0">
+                <p className="text-sm text-white font-semibold">Mode</p>
+                <p className="text-xs text-gray-500">Normal multiplayer or play against AI teams</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setAiCreate((v) => !v)}
+                className={`px-3 py-2 rounded-xl text-xs font-bold border transition-colors ${
+                  aiCreate
+                    ? 'bg-green-500/10 border-green-500/30 text-green-300'
+                    : 'bg-gray-800 border-gray-700 text-gray-300 hover:border-gray-600'
+                }`}
+              >
+                {aiCreate ? 'AI Mode Enabled' : 'Normal Mode'}
+              </button>
+            </div>
             <p className="text-xs text-gray-600 flex items-center gap-1">
               <span className="text-yellow-500">★</span> You'll be the host with full auction controls
             </p>
-            <button type="submit" disabled={loading}
-              className="w-full btn-primary py-3 rounded-xl font-display text-lg font-bold tracking-wide
-                         flex items-center justify-center gap-2 disabled:opacity-50">
-              {loading
-                ? <><div className="w-4 h-4 border-2 border-gray-900/30 border-t-gray-900 rounded-full animate-spin" />Creating…</>
-                : <><Plus className="w-5 h-5" />Create Room</>}
-            </button>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <button type="button" disabled={loading}
+                onClick={(e) => handleCreate(e, { aiEnabled: false })}
+                className="w-full py-3 rounded-xl font-display text-base font-bold tracking-wide
+                           flex items-center justify-center gap-2 disabled:opacity-50
+                           bg-gray-800 border border-gray-700 text-gray-200 hover:bg-gray-700/70 transition-colors"
+              >
+                <Plus className="w-5 h-5" />Create Room
+              </button>
+              <button type="button" disabled={loading}
+                onClick={(e) => handleCreate(e, { aiEnabled: true })}
+                className="w-full py-3 rounded-xl font-display text-base font-bold tracking-wide
+                           flex items-center justify-center gap-2 disabled:opacity-50
+                           bg-blue-500/15 border border-blue-500/40 text-blue-200 hover:bg-blue-500/20 transition-colors"
+              >
+                <Zap className="w-5 h-5" />Play with AI
+              </button>
+            </div>
           </form>
         </Modal>
       )}

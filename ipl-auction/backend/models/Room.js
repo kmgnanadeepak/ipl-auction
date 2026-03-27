@@ -32,6 +32,7 @@ const roomSchema = new mongoose.Schema({
   roomName:    { type: String, required: true, trim: true, maxlength: 40 },
   hostSession: { type: String, required: true },
   status:      { type: String, enum: ['lobby','auction','completed'], default: 'lobby' },
+  aiEnabled:   { type: Boolean, default: false },
   maxParticipants: { type: Number, default: 20 },
   participants: [participantSchema],
   config:      { type: configSchema, default: () => ({}) },

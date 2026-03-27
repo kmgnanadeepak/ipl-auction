@@ -460,6 +460,11 @@ export default function AuctionPage() {
             <span className="font-display font-bold text-white hidden sm:block">IPL AUCTION</span>
             <span className="text-gray-700 hidden sm:block">·</span>
             <span className="text-gray-300 text-sm">{room.roomName}</span>
+            {room.aiEnabled && (
+              <span className="ml-2 px-2.5 py-1 rounded-full text-[11px] font-bold bg-blue-500/15 border border-blue-500/40 text-blue-200">
+                AI MODE
+              </span>
+            )}
             <span className="font-display font-bold text-yellow-400 text-sm tracking-widest ml-2 hidden sm:block">{room.roomCode}</span>
           </div>
           <div className="flex items-center gap-2">

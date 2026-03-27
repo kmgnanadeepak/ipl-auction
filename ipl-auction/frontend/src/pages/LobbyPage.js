@@ -64,6 +64,7 @@ export default function LobbyPage() {
   const participants = room.participants || [];
   const hostPart     = participants.find(p => p.isHost);
   const config       = room.config || cfg;
+  const aiEnabled = !!room.aiEnabled;
 
   useEffect(() => {
     const status = auctionState?.status || room?.auction?.status || room?.status;
@@ -187,6 +188,11 @@ export default function LobbyPage() {
           <p className="text-yellow-300/80 text-sm font-medium">
             {isHost ? 'You are the host. Configure settings below and start when ready.' : `Waiting for host (${hostPart?.teamName || '…'}) to start the auction.`}
           </p>
+          {aiEnabled && (
+            <span className="ml-auto px-3 py-1 rounded-full text-xs font-bold bg-blue-500/15 border border-blue-500/40 text-blue-200">
+              AI Mode Enabled
+            </span>
+          )}
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-5 gap-5">

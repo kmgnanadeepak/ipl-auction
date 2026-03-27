@@ -66,19 +66,21 @@ function buildBots(roomCode, takenColors = []) {
 /* ── POST /api/rooms/create ─────────────────────────────────────── */
 router.post('/create', async (req, res) => {
   try {
-    const { roomName, teamName, sessionId } = req.body;
+    const { roomName, teamName, sessionId, aiEnabled } = req.body;
     if (!roomName?.trim() || !teamName?.trim() || !sessionId)
       return res.status(400).json({ success:false, message:'roomName, teamName and sessionId are required' });
 
     const roomCode = await uniqueCode();
     const color    = pickColor();
+    const enableAI = String(aiEnabled).toLowerCase() === 'true' || aiEnabled === true || aiEnabled === 1 || aiEnabled === '1';
     const takenColors = [color];
-    const bots = buildBots(roomCode, takenColors);
+    const bots = enableAI ? buildBots(roomCode, takenColors) : [];
 
     const room = await Room.create({
       roomCode,
       roomName: roomName.trim().slice(0,40),
       hostSession: sessionId,
+      aiEnabled: enableAI,
       participants: [{
         sessionId, teamName: teamName.trim().slice(0,30),
         color, isHost:true, isOnline:true,
@@ -88,6 +90,46 @@ router.post('/create', async (req, res) => {
 
     res.status(201).json({ success:true, room: safeRoom(room), roomCode });
   } catch(err) { res.status(500).json({ success:false, message:err.message }); }
+});
+
+/* ── POST /api/rooms/:code/enable-ai (host only, lobby only) ────── */
+router.post('/:code/enable-ai', async (req, res) => {
+  try {
+    const roomCode = req.params.code.toUpperCase();
+    const { sessionId } = req.body;
+    const room = await Room.findOne({ roomCode });
+    if (!room) return res.status(404).json({ success:false, message:'Room not found' });
+    if (room.hostSession !== sessionId) return res.status(403).json({ success:false, message:'Host only' });
+    if (room.status !== 'lobby') return res.status(400).json({ success:false, message:'AI mode can only be enabled in lobby' });
+    if (room.aiEnabled) return res.json({ success:true, room: safeRoom(room), alreadyEnabled: true });
+
+    room.aiEnabled = true;
+    const takenColors = (room.participants || []).map(p => p.color);
+    const bots = buildBots(room.roomCode, takenColors);
+    // Avoid duplicates if called multiple times
+    const existingIds = new Set((room.participants || []).map(p => p.sessionId));
+    bots.forEach((b) => {
+      if (!existingIds.has(b.sessionId)) room.participants.push(b);
+    });
+    await room.save();
+
+    const io = req.app.get('io');
+    io.to(room.roomCode).emit('participants_updated', {
+      participants: room.participants.map(p => ({
+        teamName: p.teamName, color: p.color,
+        isHost: p.isHost, isOnline: p.isOnline,
+        isBot: !!p.isBot,
+        sessionId: p.sessionId,
+        budget: p.budget, remainingBudget: p.remainingBudget,
+        squadSize: (p.squad||[]).length,
+      })),
+    });
+    io.to(room.roomCode).emit('room_updated', { room: safeRoom(room) });
+
+    return res.json({ success:true, room: safeRoom(room) });
+  } catch (err) {
+    return res.status(500).json({ success:false, message: err.message });
+  }
 });
 
 /* ── POST /api/rooms/join ───────────────────────────────────────── */
@@ -196,6 +238,7 @@ function safeRoom(room) {
     status:      obj.status,
     maxParticipants: obj.maxParticipants,
     config:      obj.config,
+    aiEnabled:   !!obj.aiEnabled,
     hostSession: obj.hostSession,     // FE needs to compare with own sessionId
     participants: (obj.participants||[]).map(p => ({
       teamName:  p.teamName,

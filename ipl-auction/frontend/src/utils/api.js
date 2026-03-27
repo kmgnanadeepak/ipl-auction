@@ -31,6 +31,9 @@ export const roomsAPI = {
     api.put(`/rooms/${code}/config`, toFormUrlEncoded({ sessionId: d?.sessionId, config: d?.config }), {
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     }),
+  enableAI: (code, d) => api.post(`/rooms/${code}/enable-ai`, toFormUrlEncoded(d), {
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+  }),
 };
 
 export const auctionAPI = {
