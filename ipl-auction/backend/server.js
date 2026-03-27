@@ -13,8 +13,14 @@ const allowedOrigins = (process.env.FRONTEND_URL || '')
   .split(',')
   .map(s => s.trim())
   .filter(Boolean);
+const allowVercelPreviews = process.env.ALLOW_VERCEL_PREVIEWS === 'true';
 const isAllowedOrigin = (origin) => {
   if (!origin) return true;
+  if (allowVercelPreviews) {
+    try {
+      if (/\.vercel\.app$/i.test(new URL(origin).hostname)) return true;
+    } catch (_) {}
+  }
   if (allowedOrigins.length === 0) return true;
   return allowedOrigins.includes(origin);
 };

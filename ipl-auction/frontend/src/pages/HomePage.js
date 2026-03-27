@@ -73,7 +73,7 @@ export default function HomePage() {
     } catch (err) {
       setError(
         err.response?.data?.message
-        || (err.request ? 'Could not reach backend API. Ensure backend is running on port 5000.' : null)
+        || (err.request ? 'Could not reach backend API. Check deployed API URL/CORS configuration.' : null)
         || 'Failed to create room'
       );
     } finally { setLoading(false); }
@@ -98,7 +98,7 @@ export default function HomePage() {
     } catch (err) {
       setError(
         err.response?.data?.message
-        || (err.request ? 'Could not reach backend API. Ensure backend is running on port 5000.' : null)
+        || (err.request ? 'Could not reach backend API. Check deployed API URL/CORS configuration.' : null)
         || 'Failed to join room'
       );
     } finally { setLoading(false); }
