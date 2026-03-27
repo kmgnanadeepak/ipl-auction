@@ -1,15 +1,11 @@
 import { io } from 'socket.io-client';
+import { API } from '../services/env';
 
-const SOCKET_URL =
-  process.env.REACT_APP_SOCKET_URL ||
-  process.env.VITE_SOCKET_URL ||
-  (process.env.REACT_APP_API_URL || process.env.VITE_API_URL || '').replace(/\/api\/?$/, '') ||
-  window.location.origin;
 let socket = null;
 
 export const getSocket = () => {
   if (!socket) {
-    socket = io(SOCKET_URL, { autoConnect: false, reconnection: true, reconnectionDelay: 1000, reconnectionAttempts: 10 });
+    socket = io(API, { autoConnect: false, reconnection: true, reconnectionDelay: 1000, reconnectionAttempts: 10 });
   }
   return socket;
 };

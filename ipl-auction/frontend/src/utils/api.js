@@ -1,20 +1,4 @@
-import axios from 'axios';
-
-const API_BASE =
-  process.env.REACT_APP_API_URL ||
-  process.env.VITE_API_URL ||
-  '/api';
-
-const api = axios.create({
-  baseURL: API_BASE,
-  headers: { 'Content-Type': 'application/json' },
-});
-
-api.interceptors.request.use(cfg => {
-  const sid = localStorage.getItem('sessionId');
-  if (sid) cfg.headers['x-session-id'] = sid;
-  return cfg;
-});
+import api from '../services/api';
 
 export const roomsAPI = {
   create   : (d)    => api.post('/rooms/create', d),

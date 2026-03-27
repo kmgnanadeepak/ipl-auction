@@ -126,7 +126,7 @@ export default function AuctionPage() {
   const audioContainerRef = useRef(null);
 
   const socket = getSocket();
-  const stunServerUrl = process.env.REACT_APP_STUN_SERVER || 'stun:stun.l.google.com:19302';
+  const stunServerUrl = 'stun:stun.l.google.com:19302';
 
   useEffect(() => {
     if (!lastBid) return;

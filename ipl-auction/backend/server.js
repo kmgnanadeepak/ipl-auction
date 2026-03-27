@@ -82,6 +82,17 @@ async function seedPlayersIfEmpty() {
   } catch(e) { console.error('Seed error:', e.message); }
 }
 
+// Optionally refresh IPL teams from live squads source on startup.
+// This runs best-effort and never blocks the server from starting if it fails.
+async function refreshIplTeamsOnStartup() {
+  try {
+    const { refreshAllPlayersIPLTeams } = require('./services/iplTeamsService');
+    await refreshAllPlayersIPLTeams();
+  } catch (e) {
+    console.error('IPL teams refresh error:', e.message);
+  }
+}
+
 const PORT = process.env.PORT || 5000;
 
 async function connectDatabase() {
@@ -100,6 +111,8 @@ async function startServer() {
   try {
     await connectDatabase();
     await seedPlayersIfEmpty();
+    // Fire-and-forget: do not block the server start if this is slow
+    refreshIplTeamsOnStartup();
     server.listen(PORT, () => console.log(`🚀 Server on port ${PORT}`));
   } catch (err) {
     console.error('MongoDB connection error:', err);
