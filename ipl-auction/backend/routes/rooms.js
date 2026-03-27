@@ -110,7 +110,7 @@ router.get('/:code', async (req, res) => {
 /* ── PUT /api/rooms/:code/config ───────────────────────────────── */
 router.put('/:code/config', async (req, res) => {
   try {
-    const { sessionId, config } = req.body;
+    let { sessionId, config } = req.body;
     const room = await Room.findOne({ roomCode: req.params.code.toUpperCase() });
     if (!room) return res.status(404).json({ success:false, message:'Room not found' });
     if (room.hostSession !== sessionId)
@@ -119,6 +119,13 @@ router.put('/:code/config', async (req, res) => {
       return res.status(400).json({ success:false, message:'Cannot change config after auction starts' });
 
     // Validate & apply
+    // In some deployments, frontend may send `config` as a JSON string via form-encoding.
+    // Support both shapes: { config: { ... } } and { config: "{"budget":...}" }.
+    if (typeof config === 'string') {
+      try { config = JSON.parse(config); } catch (_) {}
+    }
+    if (!config || typeof config !== 'object') config = {};
+
     const allowed = { budget:[5000,7500,10000,15000,20000], squadSize:[11,15,20,25], timerSeconds:[10,20,30,60] };
     if (config.budget     && allowed.budget.includes(config.budget))      room.config.budget      = config.budget;
     if (config.squadSize  && allowed.squadSize.includes(config.squadSize)) room.config.squadSize   = config.squadSize;

@@ -1,10 +1,36 @@
 import api from '../services/api';
 
+const toFormUrlEncoded = (data = {}) => {
+  const params = new URLSearchParams();
+  Object.entries(data).forEach(([k, v]) => {
+    if (v === undefined || v === null) return;
+    if (Array.isArray(v)) {
+      v.forEach((item) => params.append(k, String(item)));
+      return;
+    }
+    if (typeof v === 'object') {
+      params.append(k, JSON.stringify(v));
+      return;
+    }
+    params.append(k, String(v));
+  });
+  return params.toString();
+};
+
 export const roomsAPI = {
-  create   : (d)    => api.post('/rooms/create', d),
-  join     : (d)    => api.post('/rooms/join',   d),
+  // Some deployed backends may not parse JSON bodies reliably; form-encoding
+  // keeps the request compatible with express.urlencoded middleware.
+  create   : (d)    => api.post('/rooms/create', toFormUrlEncoded(d), {
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+  }),
+  join     : (d)    => api.post('/rooms/join', toFormUrlEncoded(d), {
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+  }),
   get      : (code) => api.get(`/rooms/${code}`),
-  setConfig: (code, d) => api.put(`/rooms/${code}/config`, d),
+  setConfig: (code, d) =>
+    api.put(`/rooms/${code}/config`, toFormUrlEncoded({ sessionId: d?.sessionId, config: d?.config }), {
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    }),
 };
 
 export const auctionAPI = {

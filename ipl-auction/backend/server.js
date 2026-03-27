@@ -9,32 +9,42 @@ dotenv.config();
 
 const app    = express();
 const server = http.createServer(app);
+const normalizeOrigin = (v) => String(v || '').trim().replace(/\/+$/, '');
 const allowedOrigins = (process.env.FRONTEND_URL || '')
   .split(',')
-  .map(s => s.trim())
+  .map((s) => normalizeOrigin(s))
   .filter(Boolean);
+
+const isProduction = (process.env.NODE_ENV || '').toLowerCase() === 'production';
 const allowVercelPreviews = process.env.ALLOW_VERCEL_PREVIEWS === 'true';
 const isAllowedOrigin = (origin) => {
   if (!origin) return true;
+  const o = normalizeOrigin(origin);
   if (allowVercelPreviews) {
     try {
-      if (/\.vercel\.app$/i.test(new URL(origin).hostname)) return true;
+      if (/\.vercel\.app$/i.test(new URL(o).hostname)) return true;
     } catch (_) {}
   }
-  if (allowedOrigins.length === 0) return true;
-  return allowedOrigins.includes(origin);
+  if (allowedOrigins.length === 0) {
+    // Avoid wildcard CORS in production even if NODE_ENV is misconfigured.
+    if (isProduction) return false;
+    return /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(o);
+  }
+  return allowedOrigins.includes(o);
 };
 const io     = socketIO(server, {
   cors: {
     origin: (origin, cb) => cb(null, isAllowedOrigin(origin)),
-    methods:['GET','POST'],
+    methods: ['GET','POST','PUT','DELETE','OPTIONS'],
     credentials:true
   }
 });
 
 app.use(cors({
   origin: (origin, cb) => cb(null, isAllowedOrigin(origin)),
-  credentials:true
+  credentials:true,
+  methods: ['GET','POST','PUT','DELETE','OPTIONS'],
+  allowedHeaders: ['Content-Type','x-session-id'],
 }));
 app.use(express.json());
 app.use(express.urlencoded({ extended:true }));
@@ -63,6 +73,11 @@ app.get('/api/health', (_, res) => {
     db: dbState,
     timestamp: new Date(),
   });
+});
+
+// Connectivity test route (used for deployment debugging)
+app.get('/api/test', (_, res) => {
+  res.status(200).json({ message: 'API working', timestamp: new Date() });
 });
 
 // ── Sockets ───────────────────────────────────────────────────────────

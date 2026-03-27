@@ -71,10 +71,16 @@ export default function HomePage() {
       toast.success(`Room ${data.roomCode} created! You are the host.`);
       navigate('/lobby');
     } catch (err) {
+      console.error('[Create Room] request failed:', err);
+      const msg =
+        err?.response?.data?.message ||
+        err?.response?.data?.error ||
+        err?.message ||
+        (err?.request ? 'Network request failed' : null);
       setError(
-        err.response?.data?.message
-        || (err.request ? 'Could not reach backend API. Check deployed API URL/CORS configuration.' : null)
-        || 'Failed to create room'
+        msg
+          ? msg
+          : 'Failed to create room (backend unreachable)'
       );
     } finally { setLoading(false); }
   };
@@ -96,10 +102,16 @@ export default function HomePage() {
       // If auction already in progress, go straight to auction
       navigate(data.room.status === 'auction' ? '/auction' : '/lobby');
     } catch (err) {
+      console.error('[Join Room] request failed:', err);
+      const msg =
+        err?.response?.data?.message ||
+        err?.response?.data?.error ||
+        err?.message ||
+        (err?.request ? 'Network request failed' : null);
       setError(
-        err.response?.data?.message
-        || (err.request ? 'Could not reach backend API. Check deployed API URL/CORS configuration.' : null)
-        || 'Failed to join room'
+        msg
+          ? msg
+          : 'Failed to join room (backend unreachable)'
       );
     } finally { setLoading(false); }
   };
