@@ -77,4 +77,4 @@ userSchema.virtual('squadCount').get(function() {
   return this.squad.length;
 });
 
-module.exports = mongoose.model('User', userSchema);
+module.exports = mongoose.models.User || mongoose.model('User', userSchema);

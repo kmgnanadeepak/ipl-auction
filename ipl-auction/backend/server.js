@@ -7,6 +7,9 @@ const dotenv    = require('dotenv');
 
 dotenv.config();
 
+// Ensure mongoose models are registered before any route/controller uses them
+require('./models/User');
+
 const app    = express();
 const server = http.createServer(app);
 const corsAllowedOrigins = [
