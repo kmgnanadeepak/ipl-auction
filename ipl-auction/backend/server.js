@@ -10,24 +10,45 @@ dotenv.config();
 const app    = express();
 const server = http.createServer(app);
 const corsAllowedOrigins = [
+  'http://localhost:3000',
   'http://localhost:5173',
   'https://ipl-auction-wine.vercel.app',
   'https://auctionx.idk158.me',
-];
+  process.env.FRONTEND_ORIGIN,
+].filter(Boolean);
+
+// If you need to temporarily allow ANY origin for testing:
+// set CORS_ALLOW_ALL=true (it will reflect the request Origin).
+const allowAllOrigins = String(process.env.CORS_ALLOW_ALL || '').toLowerCase() === 'true';
+
+const corsOptions = {
+  origin(origin, cb) {
+    // Non-browser clients (no Origin header) should be allowed.
+    if (!origin) return cb(null, true);
+    if (allowAllOrigins) return cb(null, true);
+    if (corsAllowedOrigins.includes(origin)) return cb(null, true);
+    return cb(new Error(`CORS blocked origin: ${origin}`));
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-session-id'],
+  optionsSuccessStatus: 204,
+};
 const io     = socketIO(server, {
   cors: {
-    origin: corsAllowedOrigins,
-    methods: ['GET','POST','PUT','DELETE'],
+    origin: (origin, cb) => {
+      if (!origin) return cb(null, true);
+      if (allowAllOrigins) return cb(null, true);
+      return cb(null, corsAllowedOrigins.includes(origin));
+    },
+    methods: ['GET','POST','PUT','DELETE','OPTIONS'],
     credentials:true
   }
 });
 
-app.use(cors({
-  origin: corsAllowedOrigins,
-  credentials:true,
-  methods: ['GET','POST','PUT','DELETE'],
-  allowedHeaders: ['Content-Type','x-session-id'],
-}));
+app.use(cors(corsOptions));
+// Ensure preflight requests are handled for every route
+app.options('*', cors(corsOptions));
 app.use(express.json());
 app.use(express.urlencoded({ extended:true }));
 
@@ -90,7 +111,9 @@ async function refreshIplTeamsOnStartup() {
   }
 }
 
-const PORT = process.env.PORT || 5000;
+const DEFAULT_PORT = 5000;
+const BASE_PORT = Number(process.env.PORT) || DEFAULT_PORT;
+const MAX_PORT_TRIES = 25;
 
 async function connectDatabase() {
   if (!process.env.MONGODB_URI) {
@@ -110,7 +133,28 @@ async function startServer() {
     await seedPlayersIfEmpty();
     // Fire-and-forget: do not block the server start if this is slow
     refreshIplTeamsOnStartup();
-    server.listen(PORT, () => console.log(`🚀 Server on port ${PORT}`));
+    const listenWithRetry = (port, triesLeft) => {
+      const onListening = () => {
+        server.off('error', onError);
+        console.log(`🚀 Server on port ${port}`);
+      };
+      const onError = (err) => {
+        server.off('listening', onListening);
+        if (err?.code === 'EADDRINUSE' && triesLeft > 0) {
+          console.log(`Port ${port} is in use, trying another port...`);
+          setTimeout(() => listenWithRetry(port + 1, triesLeft - 1), 250);
+          return;
+        }
+        console.error('Server failed to start:', err);
+        process.exit(1);
+      };
+
+      server.once('listening', onListening);
+      server.once('error', onError);
+      server.listen(port);
+    };
+
+    listenWithRetry(BASE_PORT, MAX_PORT_TRIES);
   } catch (err) {
     console.error('MongoDB connection error:', err);
     process.exit(1);

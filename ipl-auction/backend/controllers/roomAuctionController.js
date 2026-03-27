@@ -9,11 +9,205 @@ const { safeRoom } = require('../routes/rooms');
 const { getBudgetAlert, getTeamSpendData } = require('../services/auctionInsightsService');
 
 const timers = {};   // roomCode → intervalId
+const botTimers = {}; // roomCode → timeoutId
+const botLocks = {};  // roomCode → lastBotBidAt (ms)
 
 function broadcastAuctionInsights(io, roomCode, participants = []) {
   io.to(roomCode).emit('auction_heatmap_update', {
     spendData: getTeamSpendData(participants),
   });
+}
+
+function clearBotTimer(roomCode) {
+  if (botTimers[roomCode]) { clearTimeout(botTimers[roomCode]); delete botTimers[roomCode]; }
+}
+
+function clamp01(n) { return Math.max(0, Math.min(1, Number(n || 0))); }
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function minIncrement(cur) {
+  return cur < 200 ? 10 : cur < 500 ? 20 : cur < 1000 ? 50 : cur < 2000 ? 100 : 200;
+}
+
+function countRoles(players) {
+  const c = { Batsman: 0, Bowler: 0, 'All-rounder': 0, Wicketkeeper: 0 };
+  (players || []).forEach(p => { if (c[p?.role] != null) c[p.role] += 1; });
+  return c;
+}
+
+function targetRoleBoost(playerRole, teamPlayers = []) {
+  const c = countRoles(teamPlayers);
+  if (playerRole === 'Wicketkeeper') return c.Wicketkeeper >= 1 ? 0 : 0.12;
+  if (playerRole === 'All-rounder') return c['All-rounder'] >= 2 ? 0 : 0.10;
+  if (playerRole === 'Bowler') return c.Bowler >= 4 ? 0 : 0.08;
+  if (playerRole === 'Batsman') return c.Batsman >= 4 ? 0 : 0.08;
+  return 0;
+}
+
+function computeMarketValue(player) {
+  const rating = playerRating(player);
+  const base = Number(player?.basePrice || 0);
+  return base + (rating * 2.6);
+}
+
+async function placeBidInternal({ io, roomCode, sessionId, amount, isBot = false }) {
+  const room = await Room.findOne({ roomCode }).populate('auction.currentPlayer');
+  if (!room || room.auction.status !== 'active') {
+    return { ok: false, message: 'Auction is not active' };
+  }
+  const part = room.participants.find(p => p.sessionId === sessionId);
+  if (!part) return { ok: false, message: 'Bidder not in room' };
+
+  const cur = room.auction.currentHighestBid || 0;
+  if (room.auction.currentHighestBidderSession === sessionId) {
+    return { ok: false, message: 'Already highest bidder' };
+  }
+  if (amount <= cur) return { ok: false, message: 'Bid must exceed current' };
+  const inc = minIncrement(cur);
+  if (amount < cur + inc) return { ok: false, message: 'Minimum increment not met' };
+  if ((part.remainingBudget || 0) < amount) return { ok: false, message: 'Insufficient budget' };
+
+  const dur = room.config.timerSeconds || 30;
+  room.auction.currentHighestBid = amount;
+  room.auction.currentHighestBidderSession = sessionId;
+  room.auction.currentHighestBidderName = part.teamName;
+  room.auction.currentHighestBidderColor = part.color;
+  room.auction.timerStartedAt = new Date();
+  room.auction.timerEndsAt = new Date(Date.now() + dur * 1000);
+  room.auction.bidHistory.push({
+    playerName: room.auction.currentPlayer?.name || '',
+    bidderSession: sessionId,
+    bidderName: part.teamName,
+    bidderColor: part.color,
+    amount,
+    timestamp: new Date(),
+  });
+  room.markModified('auction');
+  await room.save();
+
+  startTimer(io, room, dur);
+  io.to(roomCode).emit('new_bid', {
+    bidderName: part.teamName,
+    bidderColor: part.color,
+    bidderSession: sessionId,
+    amount,
+    currentHighestBid: amount,
+    remainingTime: dur,
+    isBot: !!isBot,
+  });
+
+  triggerBotBids(io, roomCode, { reason: 'bid' }).catch(() => {});
+
+  return {
+    ok: true,
+    budget: {
+      totalBudget: part.budget,
+      remainingBudget: part.remainingBudget,
+      alert: getBudgetAlert(part.budget, part.remainingBudget),
+    },
+  };
+}
+
+async function triggerBotBids(io, roomCode, { reason } = {}) {
+  clearBotTimer(roomCode);
+
+  const now = Date.now();
+  const last = botLocks[roomCode] || 0;
+  if (now - last < 650) return;
+
+  const room = await Room.findOne({ roomCode })
+    .populate('auction.currentPlayer')
+    .populate('participants.squad');
+  if (!room || room.auction.status !== 'active') return;
+  const player = room.auction.currentPlayer;
+  if (!player) return;
+
+  const bots = (room.participants || []).filter(p => p.isBot);
+  if (bots.length === 0) return;
+
+  const cur = room.auction.currentHighestBid || 0;
+  const inc = minIncrement(cur);
+  const nextBid = cur + inc;
+  const winSess = room.auction.currentHighestBidderSession;
+
+  const timeLeftSec = room.auction.timerEndsAt
+    ? Math.max(0, Math.floor((new Date(room.auction.timerEndsAt) - Date.now()) / 1000))
+    : 0;
+  if (timeLeftSec <= 1) return;
+
+  const mv = computeMarketValue(player);
+  const star = (player?.rating || 0) >= 85 || playerRating(player) >= 85;
+
+  const seed = (Number(String(room._id).slice(-6), 16) || 12345)
+    ^ (Number(String(player._id).slice(-6), 16) || 67890)
+    ^ (cur * 97);
+  const rnd = mulberry32(seed);
+
+  const candidates = bots
+    .filter(b => b.sessionId !== winSess)
+    .map(b => {
+      const prof = b.botProfile || {};
+      const kind = prof.kind || 'wildcard';
+      const aggression = clamp01(prof.aggression ?? 0.5);
+      const thrift = clamp01(prof.thrift ?? 0.5);
+      const randomness = clamp01(prof.randomness ?? 0.25);
+
+      const teamPlayers = b.squad || [];
+      const roleBoost = targetRoleBoost(player.role, teamPlayers);
+
+      let capMult = 1.0;
+      if (kind === 'aggressive_star') capMult = star ? 1.22 : 1.05;
+      if (kind === 'budget_conscious') capMult = star ? 0.98 : 0.88;
+      if (kind === 'role_balancer') capMult = 1.02 + roleBoost;
+      if (kind === 'wildcard') capMult = 0.95 + (rnd() * 0.35);
+
+      const clutch = timeLeftSec <= 5 ? 0.06 : timeLeftSec <= 10 ? 0.03 : 0;
+      const cap = Math.min(
+        b.remainingBudget || 0,
+        Math.max(nextBid, (mv * (capMult + clutch)) * (0.92 + (aggression * 0.16)))
+      );
+
+      const affordability = (b.remainingBudget || 0) >= nextBid;
+      const tooExpensive = nextBid > cap;
+      const baseChance =
+        0.55 +
+        (star ? 0.18 : 0) +
+        (roleBoost * 0.9) +
+        (aggression * 0.25) -
+        (thrift * 0.20);
+      const chance = clamp01(baseChance + ((rnd() - 0.5) * randomness));
+      const willBid = affordability && !tooExpensive && rnd() < chance;
+
+      let step = inc;
+      if (kind === 'aggressive_star' && star && rnd() < 0.45) step = inc * 2;
+      if (kind === 'wildcard' && rnd() < 0.25) step = inc * (rnd() < 0.5 ? 2 : 3);
+      const amount = Math.min(Math.round((cur + step) / 10) * 10, Math.floor(cap / 10) * 10);
+
+      return { sessionId: b.sessionId, willBid, amount, cap, remaining: b.remainingBudget || 0 };
+    })
+    .filter(c => c.willBid && c.amount >= nextBid);
+
+  if (candidates.length === 0) return;
+  candidates.sort((a, b) => (b.cap - a.cap) || (b.remaining - a.remaining));
+  const pickIdx = Math.min(candidates.length - 1, Math.floor(rnd() * Math.min(3, candidates.length)));
+  const chosen = candidates[pickIdx];
+
+  const minDelay = timeLeftSec <= 5 ? 350 : 700;
+  const maxDelay = timeLeftSec <= 5 ? 950 : 2200;
+  const delay = Math.floor(minDelay + rnd() * (maxDelay - minDelay));
+
+  botTimers[roomCode] = setTimeout(async () => {
+    botLocks[roomCode] = Date.now();
+    await placeBidInternal({ io, roomCode, sessionId: chosen.sessionId, amount: chosen.amount, isBot: true });
+  }, delay);
 }
 
 function clearTimer(roomCode) {
@@ -201,6 +395,7 @@ async function buildQueue(config) {
 /* ── timer expiry ────────────────────────────────────────────────── */
 async function handleExpiry(io, roomCode) {
   try {
+    clearBotTimer(roomCode);
     const room = await Room.findOne({ roomCode }).populate('auction.currentPlayer');
     if (!room || room.auction.status !== 'active') return;
 
@@ -256,6 +451,7 @@ async function handleExpiry(io, roomCode) {
 
 /* ── move to next player ─────────────────────────────────────────── */
 async function moveNext(io, roomCode) {
+  clearBotTimer(roomCode);
   const room = await Room.findOne({ roomCode })
     .populate('participants.squad')
     .populate('auction.soldPlayers.player')
@@ -330,6 +526,7 @@ async function moveNext(io, roomCode) {
     .populate('auction.unsoldPlayers');
   io.to(roomCode).emit('next_player', { room: safeRoom(fresh), remainingTime: dur });
   startTimer(io, room, dur);
+  triggerBotBids(io, roomCode, { reason: 'next_player' }).catch(() => {});
 }
 
 /* ══ EXPORTS ═════════════════════════════════════════════════════════ */
@@ -388,6 +585,7 @@ exports.startAuction = async (req, res) => {
     io.to(roomCode).emit('auction_started', { room: safeRoom(fresh), remainingTime: dur });
     broadcastAuctionInsights(io, roomCode, fresh.participants || []);
     startTimer(io, room, dur);
+    triggerBotBids(io, roomCode, { reason: 'auction_started' }).catch(() => {});
 
     res.json({ success:true });
   } catch(err) { res.status(500).json({ success:false, message:err.message }); }
@@ -401,6 +599,7 @@ exports.pauseAuction = async (req, res) => {
     if (!room || room.hostSession !== sessionId)
       return res.status(403).json({ success:false, message:'Host only' });
     clearTimer(roomCode);
+    clearBotTimer(roomCode);
     room.auction.status = 'paused';
     await room.save();
     req.app.get('io').to(roomCode).emit('auction_paused', { message:'Auction paused by host' });
@@ -423,6 +622,7 @@ exports.resumeAuction = async (req, res) => {
     await room.save();
     io.to(roomCode).emit('auction_resumed', { remainingTime: dur });
     startTimer(io, room, dur);
+    triggerBotBids(io, roomCode, { reason: 'auction_resumed' }).catch(() => {});
     res.json({ success:true });
   } catch(err) { res.status(500).json({ success:false, message:err.message }); }
 };
@@ -435,6 +635,7 @@ exports.skipPlayer = async (req, res) => {
     if (!room || room.hostSession !== sessionId)
       return res.status(403).json({ success:false, message:'Host only' });
     clearTimer(roomCode);
+    clearBotTimer(roomCode);
     room.auction.unsoldPlayers.push(room.auction.currentPlayer);
     room.markModified('auction');
     await room.save();
@@ -452,6 +653,7 @@ exports.nextPlayer = async (req, res) => {
     if (!room || room.hostSession !== sessionId)
       return res.status(403).json({ success:false, message:'Host only' });
     clearTimer(roomCode);
+    clearBotTimer(roomCode);
     await handleExpiry(req.app.get('io'), roomCode);
     res.json({ success:true });
   } catch(err) { res.status(500).json({ success:false, message:err.message }); }
@@ -466,65 +668,10 @@ exports.placeBid = async (req, res) => {
     if (!sessionId || !amount)
       return res.status(400).json({ success:false, message:'sessionId and amount required' });
 
-    const room = await Room.findOne({ roomCode });
-    if (!room || room.auction.status !== 'active')
-      return res.status(400).json({ success:false, message:'Auction is not active' });
+    const result = await placeBidInternal({ io, roomCode, sessionId, amount, isBot: false });
+    if (!result.ok) return res.status(400).json({ success: false, message: result.message || 'Bid failed' });
 
-    const part = room.participants.find(p => p.sessionId === sessionId);
-    if (!part) return res.status(403).json({ success:false, message:'You are not in this room' });
-
-    const cur = room.auction.currentHighestBid;
-    if (room.auction.currentHighestBidderSession === sessionId)
-      return res.status(400).json({ success:false, message:'You are already the highest bidder!' });
-    if (amount <= cur)
-      return res.status(400).json({ success:false, message:`Bid must exceed ₹${cur}L` });
-
-    // Increment rules
-    const minInc = cur<200?10:cur<500?20:cur<1000?50:cur<2000?100:200;
-    if (amount < cur + minInc)
-      return res.status(400).json({ success:false, message:`Minimum increment is ₹${minInc}L` });
-
-    if (part.remainingBudget < amount)
-      return res.status(400).json({ success:false, message:`Insufficient budget (₹${part.remainingBudget}L left)` });
-
-    const dur = room.config.timerSeconds || 30;
-    room.auction.currentHighestBid             = amount;
-    room.auction.currentHighestBidderSession   = sessionId;
-    room.auction.currentHighestBidderName      = part.teamName;
-    room.auction.currentHighestBidderColor     = part.color;
-    room.auction.timerStartedAt = new Date();
-    room.auction.timerEndsAt    = new Date(Date.now() + dur*1000);
-    room.auction.bidHistory.push({
-      playerName:    room.auction.currentPlayer?.name || '',
-      bidderSession: sessionId,
-      bidderName:    part.teamName,
-      bidderColor:   part.color,
-      amount,
-      timestamp:     new Date(),
-    });
-    room.markModified('auction');
-    await room.save();
-
-    startTimer(io, room, dur);
-
-    io.to(roomCode).emit('new_bid', {
-      bidderName:  part.teamName,
-      bidderColor: part.color,
-      bidderSession: sessionId,
-      amount,
-      currentHighestBid: amount,
-      remainingTime: dur,
-    });
-
-    res.json({
-      success: true,
-      message: `Bid of ₹${amount}L placed!`,
-      budget: {
-        totalBudget: part.budget,
-        remainingBudget: part.remainingBudget,
-        alert: getBudgetAlert(part.budget, part.remainingBudget),
-      },
-    });
+    res.json({ success: true, message: `Bid of ₹${amount}L placed!`, budget: result.budget });
   } catch(err) { res.status(500).json({ success:false, message:err.message }); }
 };
 
@@ -541,6 +688,7 @@ exports.endRound = async (req, res) => {
     }
 
     clearTimer(roomCode);
+    clearBotTimer(roomCode);
     const pendingIds = [
       ...(room.auction.currentPlayer ? [room.auction.currentPlayer] : []),
       ...(room.auction.playerQueue || []),
@@ -636,6 +784,7 @@ exports.startNextRound = async (req, res) => {
     });
     io.to(roomCode).emit('room_updated', { room: safeRoom(fresh) });
     startTimer(io, room, dur);
+    triggerBotBids(io, roomCode, { reason: 'next_round_started' }).catch(() => {});
     return res.json({ success:true, round: fresh.auction.currentRound });
   } catch(err) { res.status(500).json({ success:false, message:err.message }); }
 };

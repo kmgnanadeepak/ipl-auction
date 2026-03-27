@@ -1,14 +1,15 @@
 const Player = require('../models/Player');
-const fetch = require('node-fetch');
+const fs = require('fs');
+const path = require('path');
 
-// In-memory cache so we don't hammer the external API
+// In-memory cache so we don't re-read JSON too often
 let cachedMap = null;
 let cachedAt = 0;
+let cachedSquads = null;
+let cachedSquadsAt = 0;
 
 // Default TTL: 24 hours (in ms)
 const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000;
-
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const normalizeName = (name = '') =>
   String(name)
@@ -34,57 +35,26 @@ function fuzzyFindTeam(normalizedName, map) {
   return null;
 }
 
-async function fetchRawSquadsFromApi() {
-  const endpoint =
-    process.env.IPL_SQUADS_URL ||
-    // Placeholder – user should point this to RapidAPI / CricBuzz / ESPN
-    'https://example.com/ipl-2026-squads';
-
-  const headers = {};
-
-  if (process.env.RAPIDAPI_IPL_HOST) {
-    headers['x-rapidapi-host'] = process.env.RAPIDAPI_IPL_HOST;
-  }
-  if (process.env.RAPIDAPI_IPL_KEY) {
-    headers['x-rapidapi-key'] = process.env.RAPIDAPI_IPL_KEY;
-  }
-
-  const res = await fetch(endpoint, { headers });
-  if (!res.ok) {
-    throw new Error(`IPL squads fetch failed: ${res.status} ${res.statusText}`);
-  }
-  return res.json();
+function playersJsonPath() {
+  return path.join(__dirname, '..', 'config', 'players.json');
 }
 
-/**
- * Transform the external API response into a flat
- * { normalizedPlayerName: teamCodeOrName } map.
- *
- * This is intentionally generic – adapt the parsing to your chosen API
- * structure (RapidAPI Cricbuzz / ESPN, etc.).
- */
-function buildPlayerTeamMapFromApiResponse(raw) {
-  const map = {};
+function readPlayersJson() {
+  const raw = fs.readFileSync(playersJsonPath(), 'utf8');
+  const parsed = JSON.parse(raw);
+  return Array.isArray(parsed) ? parsed : [];
+}
 
-  if (!raw) return map;
+function resolveTeamField(p) {
+  // Requirement says "team" field; fall back to existing schema field `iplTeam`.
+  return p?.team || p?.iplTeam || 'Did Not Play';
+}
 
-  // Very generic handling:
-  // Expecting something like: [{ teamName, shortName, players: [{ name }, ...] }, ...]
-  const teams = Array.isArray(raw.teams || raw.squads || raw) ? (raw.teams || raw.squads || raw) : [];
-
-  teams.forEach((team) => {
-    const teamCode = team.shortName || team.abbreviation || team.code || team.teamName || team.name;
-    const players = Array.isArray(team.players || team.squad || team.members) ? (team.players || team.squad || team.members) : [];
-    if (!teamCode || !players.length) return;
-
-    players.forEach((p) => {
-      const n = normalizeName(p.name || p.fullName || p.playerName);
-      if (!n) return;
-      map[n] = teamCode;
-    });
-  });
-
-  return map;
+function shouldFilterToAuctionOutcome(players) {
+  // If the dataset has any "sold" markers, return only those.
+  return (players || []).some((p) =>
+    p?.status === 'sold' || p?.soldPrice != null || p?.soldTo != null
+  );
 }
 
 async function getPlayerTeamMap({ forceRefresh = false } = {}) {
@@ -95,18 +65,19 @@ async function getPlayerTeamMap({ forceRefresh = false } = {}) {
     return cachedMap;
   }
 
-  try {
-    const raw = await fetchRawSquadsFromApi();
-    const map = buildPlayerTeamMapFromApiResponse(raw);
-    cachedMap = map;
-    cachedAt = now;
-    return map;
-  } catch (err) {
-    console.error('[iplTeamsService] Failed to refresh squads:', err.message);
-    // Never throw to callers – they can still fall back to DB values / DNP
-    if (cachedMap) return cachedMap;
-    return {};
-  }
+  const players = readPlayersJson();
+  const onlyOutcome = shouldFilterToAuctionOutcome(players);
+  const map = {};
+  (onlyOutcome ? players.filter(p => p?.status === 'sold' || p?.soldPrice != null || p?.soldTo != null) : players)
+    .forEach((p) => {
+      const n = normalizeName(p?.name);
+      if (!n) return;
+      map[n] = resolveTeamField(p);
+    });
+
+  cachedMap = map;
+  cachedAt = now;
+  return map;
 }
 
 /**
@@ -122,7 +93,7 @@ async function attachLiveTeamsToPlayers(players) {
   return players.map((p) => {
     if (!p) return p;
     const doc = p.toObject ? p.toObject() : { ...p };
-    const existingTeam = doc.iplTeam && doc.iplTeam !== 'Did Not Play' ? doc.iplTeam : null;
+    const existingTeam = resolveTeamField(doc) && resolveTeamField(doc) !== 'Did Not Play' ? resolveTeamField(doc) : null;
 
     const normalized = normalizeName(doc.name);
     const liveTeam = fuzzyFindTeam(normalized, map);
@@ -132,6 +103,45 @@ async function attachLiveTeamsToPlayers(players) {
       iplTeam: liveTeam || existingTeam || 'Did Not Play',
     };
   });
+}
+
+/**
+ * Return team squads derived purely from local `players.json`,
+ * grouped by the player's "team" field (or `iplTeam` fallback).
+ *
+ * If auction outcome markers exist, only includes sold/outcome players.
+ */
+async function getTeamSquads({ forceRefresh = false } = {}) {
+  const ttlMs = Number(process.env.IPL_SQUADS_TTL_MS || DEFAULT_TTL_MS);
+  const now = Date.now();
+  if (!forceRefresh && cachedSquads && now - cachedSquadsAt < ttlMs) return cachedSquads;
+
+  const players = readPlayersJson();
+  const onlyOutcome = shouldFilterToAuctionOutcome(players);
+  const list = onlyOutcome
+    ? players.filter(p => p?.status === 'sold' || p?.soldPrice != null || p?.soldTo != null)
+    : players;
+
+  const squads = {};
+  list.forEach((p) => {
+    const team = resolveTeamField(p);
+    if (!team) return;
+    if (!squads[team]) squads[team] = [];
+    squads[team].push(p);
+  });
+
+  // Stable ordering inside squads: soldPrice desc (if present), else basePrice desc, else name asc
+  Object.keys(squads).forEach((t) => {
+    squads[t].sort((a, b) =>
+      (Number(b?.soldPrice || 0) - Number(a?.soldPrice || 0)) ||
+      (Number(b?.basePrice || 0) - Number(a?.basePrice || 0)) ||
+      String(a?.name || '').localeCompare(String(b?.name || ''))
+    );
+  });
+
+  cachedSquads = squads;
+  cachedSquadsAt = now;
+  return squads;
 }
 
 /**
@@ -154,14 +164,10 @@ async function refreshAllPlayersIPLTeams() {
       if (pl.iplTeam !== liveTeam) {
         pl.iplTeam = liveTeam;
         await pl.save();
-        // Small delay to be nice to MongoDB in tiny deployments
-        await sleep(5);
       }
     }
-
-    console.log('[iplTeamsService] Refreshed IPL teams for', players.length, 'players');
   } catch (err) {
-    console.error('[iplTeamsService] Failed to refresh all players:', err.message);
+    // Intentionally silent: this service must not depend on external APIs.
   }
 }
 
@@ -169,5 +175,6 @@ module.exports = {
   getPlayerTeamMap,
   attachLiveTeamsToPlayers,
   refreshAllPlayersIPLTeams,
+  getTeamSquads,
 };
 

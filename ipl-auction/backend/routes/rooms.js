@@ -8,6 +8,15 @@ const { getBudgetAlert, getTeamSpendData } = require('../services/auctionInsight
 const COLORS = ['#FFD700','#FF6B00','#004BA0','#1B5E20','#B71C1C',
                 '#4A148C','#006064','#F57F17','#880E4F','#01579B',
                 '#33691E','#E65100','#BF360C','#37474F','#4CAF50'];
+const DEFAULT_BOTS = [
+  { teamName: 'MI Bot',  kind: 'aggressive_star',  color: '#004BA0' },
+  { teamName: 'CSK Bot', kind: 'role_balancer',    color: '#F9CD05' },
+  { teamName: 'RCB Bot', kind: 'wildcard',         color: '#B71C1C' },
+  { teamName: 'KKR Bot', kind: 'budget_conscious', color: '#4A148C' },
+  { teamName: 'SRH Bot', kind: 'aggressive_star',  color: '#FF6B00' },
+  { teamName: 'DC Bot',  kind: 'role_balancer',    color: '#01579B' },
+  { teamName: 'RR Bot',  kind: 'budget_conscious', color: '#880E4F' },
+];
 
 /* ── helpers ───────────────────────────────────────────────────── */
 function makeRoomCode() {
@@ -25,6 +34,34 @@ function pickColor(taken=[]) {
   const free = COLORS.filter(c=>!taken.includes(c));
   return (free.length ? free : COLORS)[Math.floor(Math.random()*(free.length||COLORS.length))];
 }
+function clamp01(n) { return Math.max(0, Math.min(1, Number(n || 0))); }
+function makeBotProfile(kind) {
+  if (kind === 'aggressive_star') return { kind, aggression: 0.9, thrift: 0.2, randomness: 0.2 };
+  if (kind === 'budget_conscious') return { kind, aggression: 0.35, thrift: 0.9, randomness: 0.15 };
+  if (kind === 'role_balancer') return { kind, aggression: 0.55, thrift: 0.55, randomness: 0.15 };
+  return { kind: 'wildcard', aggression: 0.65, thrift: 0.45, randomness: 0.45 };
+}
+function buildBots(roomCode, takenColors = []) {
+  const bots = [];
+  DEFAULT_BOTS.forEach((b, idx) => {
+    const sessionId = `bot:${roomCode}:${idx + 1}`;
+    const color = takenColors.includes(b.color) ? pickColor(takenColors) : b.color;
+    takenColors.push(color);
+    bots.push({
+      sessionId,
+      teamName: b.teamName,
+      color,
+      isHost: false,
+      isOnline: true,
+      isBot: true,
+      botProfile: makeBotProfile(b.kind),
+      budget: 10000,
+      remainingBudget: 10000,
+      squad: [],
+    });
+  });
+  return bots;
+}
 
 /* ── POST /api/rooms/create ─────────────────────────────────────── */
 router.post('/create', async (req, res) => {
@@ -35,6 +72,8 @@ router.post('/create', async (req, res) => {
 
     const roomCode = await uniqueCode();
     const color    = pickColor();
+    const takenColors = [color];
+    const bots = buildBots(roomCode, takenColors);
 
     const room = await Room.create({
       roomCode,
@@ -44,7 +83,7 @@ router.post('/create', async (req, res) => {
         sessionId, teamName: teamName.trim().slice(0,30),
         color, isHost:true, isOnline:true,
         budget:10000, remainingBudget:10000,
-      }],
+      }, ...bots],
     });
 
     res.status(201).json({ success:true, room: safeRoom(room), roomCode });
@@ -163,6 +202,7 @@ function safeRoom(room) {
       color:     p.color,
       isHost:    p.isHost,
       isOnline:  p.isOnline,
+      isBot:     !!p.isBot,
       sessionId: p.sessionId,         // needed for host/self checks on FE
       budget:    p.budget,
       remainingBudget: p.remainingBudget,

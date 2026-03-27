@@ -5,6 +5,13 @@ const participantSchema = new mongoose.Schema({
   teamName:   { type: String, required: true },
   color:      { type: String, default: '#FFD700' },
   isHost:     { type: Boolean, default: false },
+  isBot:      { type: Boolean, default: false },
+  botProfile: {
+    kind: { type: String, default: null }, // aggressive_star | budget_conscious | role_balancer | wildcard
+    aggression: { type: Number, default: 0.5 }, // 0..1
+    thrift:     { type: Number, default: 0.5 }, // 0..1
+    randomness: { type: Number, default: 0.25 }, // 0..1
+  },
   isOnline:   { type: Boolean, default: true },
   joinedAt:   { type: Date, default: Date.now },
   budget:     { type: Number, default: 10000 },
