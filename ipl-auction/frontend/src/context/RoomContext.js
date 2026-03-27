@@ -108,6 +108,7 @@ export const RoomProvider = ({ children }) => {
         roomCode: r?.roomCode,
         status: r?.auction?.status,
         remainingTime: rt,
+        queue: r?.auction?.playerQueue?.length || 0,
       });
       setRoom(r);
       setAuctionState(r.auction);
@@ -128,6 +129,10 @@ export const RoomProvider = ({ children }) => {
       setAuctionState(r.auction);
       setBidHistory([]);
       setLastBid(null);
+      console.log('[socket] next_player', {
+        current: r?.auction?.currentPlayer?.name,
+        queue: r?.auction?.playerQueue?.length || 0,
+      });
       startLocalTimer(rt);
       addNotif(`Now: ${r.auction?.currentPlayer?.name || 'Next player'}`, 'info');
     });

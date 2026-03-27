@@ -12,6 +12,53 @@ const timers = {};   // roomCode → intervalId
 const botTimers = {}; // roomCode → timeoutId
 const botLocks = {};  // roomCode → lastBotBidAt (ms)
 
+function normalizePlayerFromJson(p = {}) {
+  return {
+    name: p.name,
+    country: p.country || 'India',
+    role: p.role,
+    battingStyle: p.batting || p.battingStyle || '',
+    bowlingStyle: p.bowling || p.bowlingStyle || '',
+    basePrice: Number(p.basePrice || 0),
+    rating: Number(p.rating ?? 0),
+    category: p.category || 'General',
+    iplTeam: p.iplTeam || 'Did Not Play',
+    isCapped: Boolean(p.isCapped),
+    isOverseas: Boolean(p.isOverseas),
+    image: p.image || '',
+    status: p.status || 'available',
+    auctionOrder: Number(p.auctionOrder) || 0,
+    stats: {
+      matches: Number(p.stats?.matches ?? p.stats?.m ?? 0),
+      runs: Number(p.stats?.runs ?? p.stats?.r ?? 0),
+      average: Number(p.stats?.average ?? p.stats?.avg ?? 0),
+      strikeRate: Number(p.stats?.strikeRate ?? p.stats?.sr ?? 0),
+      wickets: Number(p.stats?.wickets ?? p.stats?.wkts ?? 0),
+      economy: Number(p.stats?.economy ?? p.stats?.eco ?? 0),
+      battingAverage: Number(p.stats?.battingAverage ?? p.stats?.batAvg ?? p.stats?.average ?? p.stats?.avg ?? 0),
+      bowlingAverage: Number(p.stats?.bowlingAverage ?? p.stats?.bowlAvg ?? 0),
+      fifties: Number(p.stats?.fifties ?? p.stats?.['50s'] ?? 0),
+      hundreds: Number(p.stats?.hundreds ?? p.stats?.['100s'] ?? 0),
+    },
+    soldPrice: p.soldPrice ?? null,
+    soldTo: p.soldTo ?? null,
+  };
+}
+
+async function ensurePlayersSeededFromJson() {
+  const count = await Player.countDocuments();
+  if (count > 0) return { seeded: false, count };
+  const raw = require('../config/players.json');
+  const source = Array.isArray(raw) ? raw : [];
+  const valid = source.filter(x => x?.name && x?.role && x?.country && x?.basePrice != null);
+  const docs = valid.map(normalizePlayerFromJson);
+  if (!docs.length) return { seeded: false, count: 0 };
+  await Player.insertMany(docs, { ordered: false });
+  const nextCount = await Player.countDocuments();
+  console.log('[auction] seeded players from players.json:', nextCount);
+  return { seeded: true, count: nextCount };
+}
+
 function broadcastAuctionInsights(io, roomCode, participants = []) {
   io.to(roomCode).emit('auction_heatmap_update', {
     spendData: getTeamSpendData(participants),
@@ -397,7 +444,13 @@ async function buildQueue(config) {
   let query = {};
   if (categories && categories.length) query.role = { $in: categories };
 
+  await ensurePlayersSeededFromJson();
   let players = await Player.find(query).lean();
+  console.log('[auction] buildQueue', {
+    categories: categories?.length ? categories : 'all',
+    playerOrder,
+    found: players.length,
+  });
 
   if (playerOrder === 'category') {
     const order = ['Batsman','Wicketkeeper','All-rounder','Bowler'];
@@ -569,6 +622,7 @@ exports.startAuction = async (req, res) => {
 
     const players = await buildQueue(room.config);
     if (!players.length) return res.status(400).json({ success:false, message:'No players match the selected categories' });
+    console.log('[auction] startAuction queue built', { roomCode, players: players.length });
 
     // Sync budget from config
     room.participants.forEach(p => { p.budget = room.config.budget; p.remainingBudget = room.config.budget; });
