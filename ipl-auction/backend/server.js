@@ -9,41 +9,23 @@ dotenv.config();
 
 const app    = express();
 const server = http.createServer(app);
-const normalizeOrigin = (v) => String(v || '').trim().replace(/\/+$/, '');
-const allowedOrigins = (process.env.FRONTEND_URL || '')
-  .split(',')
-  .map((s) => normalizeOrigin(s))
-  .filter(Boolean);
-
-const isProduction = (process.env.NODE_ENV || '').toLowerCase() === 'production';
-const allowVercelPreviews = process.env.ALLOW_VERCEL_PREVIEWS === 'true';
-const isAllowedOrigin = (origin) => {
-  if (!origin) return true;
-  const o = normalizeOrigin(origin);
-  if (allowVercelPreviews) {
-    try {
-      if (/\.vercel\.app$/i.test(new URL(o).hostname)) return true;
-    } catch (_) {}
-  }
-  if (allowedOrigins.length === 0) {
-    // Avoid wildcard CORS in production even if NODE_ENV is misconfigured.
-    if (isProduction) return false;
-    return /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(o);
-  }
-  return allowedOrigins.includes(o);
-};
+const corsAllowedOrigins = [
+  'http://localhost:5173',
+  'https://ipl-auction-wine.vercel.app',
+  'https://auctionx.idk158.me',
+];
 const io     = socketIO(server, {
   cors: {
-    origin: (origin, cb) => cb(null, isAllowedOrigin(origin)),
-    methods: ['GET','POST','PUT','DELETE','OPTIONS'],
+    origin: corsAllowedOrigins,
+    methods: ['GET','POST','PUT','DELETE'],
     credentials:true
   }
 });
 
 app.use(cors({
-  origin: (origin, cb) => cb(null, isAllowedOrigin(origin)),
+  origin: corsAllowedOrigins,
   credentials:true,
-  methods: ['GET','POST','PUT','DELETE','OPTIONS'],
+  methods: ['GET','POST','PUT','DELETE'],
   allowedHeaders: ['Content-Type','x-session-id'],
 }));
 app.use(express.json());
