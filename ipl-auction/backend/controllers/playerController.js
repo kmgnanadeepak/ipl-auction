@@ -1,6 +1,14 @@
 const Player = require('../models/Player');
 const { attachLiveTeamsToPlayers } = require('../services/iplTeamsService');
 const { mapPlayersWithLiveTeams } = require('../services/liveIplTeamService');
+const mongoose = require('mongoose');
+
+function maybePopulateSoldTo(q) {
+  // Player Comparison (and most guest flows) don't require User population.
+  // Guard against MissingSchemaError if User isn't registered in some deployments.
+  if (mongoose.models?.User) return q.populate('soldTo', 'name teamName color');
+  return q;
+}
 
 // Get all players with filters
 exports.getPlayers = async (req, res) => {
@@ -18,11 +26,11 @@ exports.getPlayers = async (req, res) => {
       ];
     }
 
-    const players = await Player.find(query)
-      .populate('soldTo', 'name teamName color')
+    const q = Player.find(query)
       .sort({ auctionOrder: 1, name: 1 })
       .limit(limit * 1)
       .skip((page - 1) * limit);
+    const players = await maybePopulateSoldTo(q);
 
     const total = await Player.countDocuments(query);
     console.log('[players] fetch', {
@@ -56,11 +64,11 @@ exports.getPlayersWithLiveTeams = async (req, res) => {
       ];
     }
 
-    const players = await Player.find(query)
-      .populate('soldTo', 'name teamName color')
+    const q = Player.find(query)
       .sort({ auctionOrder: 1, name: 1 })
       .limit(limit * 1)
       .skip((page - 1) * limit);
+    const players = await maybePopulateSoldTo(q);
 
     const total = await Player.countDocuments(query);
 
@@ -88,11 +96,11 @@ exports.getPlayersWithLiveTeams = async (req, res) => {
           { iplTeam: { $regex: search, $options: 'i' } },
         ];
       }
-      const players = await Player.find(query)
-        .populate('soldTo', 'name teamName color')
+      const q = Player.find(query)
         .sort({ auctionOrder: 1, name: 1 })
         .limit(limit * 1)
         .skip((page - 1) * limit);
+      const players = await maybePopulateSoldTo(q);
       const total = await Player.countDocuments(query);
       res.json({
         success: true,
@@ -124,11 +132,11 @@ exports.getPlayersWithTeams = async (req, res) => {
       ];
     }
 
-    const players = await Player.find(query)
-      .populate('soldTo', 'name teamName color')
+    const q = Player.find(query)
       .sort({ auctionOrder: 1, name: 1 })
       .limit(limit * 1)
       .skip((page - 1) * limit);
+    const players = await maybePopulateSoldTo(q);
 
     const total = await Player.countDocuments(query);
     const mapped = await mapPlayersWithLiveTeams(players, {
@@ -152,7 +160,8 @@ exports.getPlayersWithTeams = async (req, res) => {
 // Get single player
 exports.getPlayer = async (req, res) => {
   try {
-    const player = await Player.findById(req.params.id).populate('soldTo', 'name teamName color');
+    const q = Player.findById(req.params.id);
+    const player = await maybePopulateSoldTo(q);
     if (!player) return res.status(404).json({ success: false, message: 'Player not found' });
     res.json({ success: true, player });
   } catch (error) {
