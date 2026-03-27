@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import { playersAPI, formatPrice } from '../utils/api';
 import { Search, ChevronDown, Globe2, Star, ArrowLeft } from 'lucide-react';
@@ -23,27 +23,89 @@ export default function PlayersPage() {
   const [search,  setSearch]  = useState('');
   const [role,    setRole]    = useState('all');
   const [status,  setStatus]  = useState('all');
+  const [iplTeam, setIplTeam] = useState('all');
+  const [nationality, setNationality] = useState('all');
+  const [minPrice, setMinPrice] = useState('');
+  const [maxPrice, setMaxPrice] = useState('');
+  const [sortBy, setSortBy] = useState('rating_desc');
   const [sel,     setSel]     = useState(null);
 
   const fetch = useCallback(async () => {
     setLoading(true);
     setError('');
     try {
-      const params = { limit: 311 };
-      if (role   !== 'all') params.role   = role;
-      if (status !== 'all') params.status = status;
-      if (search)           params.search = search;
+      const params = { limit: 2000 };
       const { data } = await playersAPI.getAll(params);
-      console.log('[PlayersPage] /api/players response', data);
       setPlayers(data.players || []);
     } catch (err) {
       console.error('[PlayersPage] fetch error', err);
       setPlayers([]);
       setError(err.response?.data?.message || 'Failed to load players from API');
     } finally { setLoading(false); }
-  }, [role, status, search]);
+  }, []);
 
-  useEffect(() => { const t = setTimeout(fetch, 280); return () => clearTimeout(t); }, [fetch]);
+  useEffect(() => { fetch(); }, [fetch]);
+
+  const iplTeams = useMemo(() => {
+    const set = new Set();
+    (players || []).forEach(p => set.add(p.iplTeam || 'Did Not Play'));
+    return [...set].sort((a, b) => String(a).localeCompare(String(b)));
+  }, [players]);
+
+  const nationalities = useMemo(() => {
+    const set = new Set();
+    (players || []).forEach(p => set.add(p.country || 'Unknown'));
+    return [...set].sort((a, b) => String(a).localeCompare(String(b)));
+  }, [players]);
+
+  const filteredPlayers = useMemo(() => {
+    const s = search.trim().toLowerCase();
+    const min = minPrice === '' ? null : Number(minPrice);
+    const max = maxPrice === '' ? null : Number(maxPrice);
+    const list = (players || [])
+      .filter(p => {
+        if (!s) return true;
+        return (
+          String(p.name || '').toLowerCase().includes(s) ||
+          String(p.country || '').toLowerCase().includes(s) ||
+          String(p.iplTeam || '').toLowerCase().includes(s)
+        );
+      })
+      .filter(p => role === 'all' || p.role === role)
+      .filter(p => status === 'all' || p.status === status)
+      .filter(p => iplTeam === 'all' || (p.iplTeam || 'Did Not Play') === iplTeam)
+      .filter(p => nationality === 'all' || (p.country || 'Unknown') === nationality)
+      .filter(p => {
+        const bp = Number(p.basePrice || 0);
+        if (min != null && bp < min) return false;
+        if (max != null && bp > max) return false;
+        return true;
+      });
+
+    const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
+    const srOf = (p) => num(p?.stats?.strikeRate ?? p?.stats?.sr);
+    const avgOf = (p) => num(p?.stats?.average ?? p?.stats?.avg);
+    const ratingOf = (p) => num(p?.rating);
+    const baseOf = (p) => num(p?.basePrice);
+    const vfmOf = (p) => {
+      const base = baseOf(p);
+      const rating = ratingOf(p) || 0;
+      if (base <= 0) return rating;
+      return rating / base; // higher = better value-for-money
+    };
+
+    const sorted = [...list].sort((a, b) => {
+      if (sortBy === 'name_asc') return String(a.name || '').localeCompare(String(b.name || ''));
+      if (sortBy === 'basePrice_asc') return baseOf(a) - baseOf(b) || ratingOf(b) - ratingOf(a);
+      if (sortBy === 'basePrice_desc') return baseOf(b) - baseOf(a) || ratingOf(b) - ratingOf(a);
+      if (sortBy === 'sr_desc') return srOf(b) - srOf(a) || ratingOf(b) - ratingOf(a);
+      if (sortBy === 'avg_desc') return avgOf(b) - avgOf(a) || ratingOf(b) - ratingOf(a);
+      if (sortBy === 'vfm_desc') return vfmOf(b) - vfmOf(a) || ratingOf(b) - ratingOf(a);
+      // rating_desc default
+      return ratingOf(b) - ratingOf(a) || srOf(b) - srOf(a);
+    });
+    return sorted;
+  }, [players, search, role, status, iplTeam, nationality, minPrice, maxPrice, sortBy]);
 
   return (
     <div className="min-h-screen bg-ipl-dark">
@@ -53,30 +115,81 @@ export default function PlayersPage() {
             <ArrowLeft className="w-5 h-5"/>
           </Link>
           <h1 className="font-display font-bold text-white text-xl">Player Pool</h1>
-          <span className="text-gray-600 text-sm">{players.length} players</span>
+          <span className="text-gray-600 text-sm">{filteredPlayers.length} players</span>
         </div>
       </header>
 
       <div className="max-w-7xl mx-auto px-4 py-5">
         {/* filters */}
-        <div className="flex flex-col sm:flex-row gap-3 mb-5">
+        <div className="flex flex-col gap-3 mb-5">
           <div className="relative flex-1">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500"/>
             <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search player, country or IPL team…"
               className="w-full pl-10 pr-4 py-2.5 rounded-xl bg-gray-800 border border-gray-700 text-white text-sm focus:outline-none focus:border-yellow-500"/>
           </div>
-          {[
-            { val:role,   set:setRole,   opts:['all','Batsman','Bowler','All-rounder','Wicketkeeper'] },
-            { val:status, set:setStatus, opts:['all','available','sold','unsold','in_auction'] },
-          ].map(({val,set,opts},i) => (
-            <div key={i} className="relative">
-              <select value={val} onChange={e=>set(e.target.value)}
-                className="pl-4 pr-9 py-2.5 rounded-xl bg-gray-800 border border-gray-700 text-white text-sm focus:outline-none focus:border-yellow-500 appearance-none">
-                {opts.map(o=><option key={o} value={o}>{o==='all'?`All ${i===0?'Roles':'Status'}`:o}</option>)}
+          <div className="flex flex-col sm:flex-row gap-3">
+            {[
+              { label: 'Role', val: role, set: setRole, opts: ['all','Batsman','Bowler','All-rounder','Wicketkeeper'] },
+              { label: 'Status', val: status, set: setStatus, opts: ['all','available','sold','unsold','in_auction'] },
+            ].map(({label,val,set,opts},i) => (
+              <div key={i} className="relative">
+                <select value={val} onChange={e=>set(e.target.value)}
+                  className="pl-4 pr-9 py-2.5 rounded-xl bg-gray-800 border border-gray-700 text-white text-sm focus:outline-none focus:border-yellow-500 appearance-none min-w-44">
+                  {opts.map(o => <option key={o} value={o}>{o === 'all' ? `All ${label}` : o}</option>)}
+                </select>
+                <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500 pointer-events-none"/>
+              </div>
+            ))}
+            <div className="relative">
+              <select value={iplTeam} onChange={e => setIplTeam(e.target.value)}
+                className="pl-4 pr-9 py-2.5 rounded-xl bg-gray-800 border border-gray-700 text-white text-sm focus:outline-none focus:border-yellow-500 appearance-none min-w-44">
+                <option value="all">All IPL Teams</option>
+                {iplTeams.map(t => <option key={t} value={t}>{t}</option>)}
               </select>
               <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500 pointer-events-none"/>
             </div>
-          ))}
+            <div className="relative">
+              <select value={nationality} onChange={e => setNationality(e.target.value)}
+                className="pl-4 pr-9 py-2.5 rounded-xl bg-gray-800 border border-gray-700 text-white text-sm focus:outline-none focus:border-yellow-500 appearance-none min-w-44">
+                <option value="all">All Nationalities</option>
+                {nationalities.map(n => <option key={n} value={n}>{n}</option>)}
+              </select>
+              <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500 pointer-events-none"/>
+            </div>
+          </div>
+
+          <div className="flex flex-col sm:flex-row gap-3">
+            <input
+              value={minPrice}
+              onChange={(e) => setMinPrice(e.target.value)}
+              type="number"
+              placeholder="Min base price (L)"
+              className="px-4 py-2.5 rounded-xl bg-gray-800 border border-gray-700 text-white text-sm focus:outline-none focus:border-yellow-500"
+            />
+            <input
+              value={maxPrice}
+              onChange={(e) => setMaxPrice(e.target.value)}
+              type="number"
+              placeholder="Max base price (L)"
+              className="px-4 py-2.5 rounded-xl bg-gray-800 border border-gray-700 text-white text-sm focus:outline-none focus:border-yellow-500"
+            />
+            <div className="relative">
+              <select
+                value={sortBy}
+                onChange={(e) => setSortBy(e.target.value)}
+                className="pl-4 pr-9 py-2.5 rounded-xl bg-gray-800 border border-gray-700 text-white text-sm focus:outline-none focus:border-yellow-500 appearance-none min-w-52"
+              >
+                <option value="rating_desc">Sort: Rating</option>
+                <option value="sr_desc">Sort: Strike Rate</option>
+                <option value="avg_desc">Sort: Average</option>
+                <option value="basePrice_asc">Sort: Base Price (Low → High)</option>
+                <option value="basePrice_desc">Sort: Base Price (High → Low)</option>
+                <option value="vfm_desc">Sort: Value-for-money</option>
+                <option value="name_asc">Sort: Name</option>
+              </select>
+              <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500 pointer-events-none"/>
+            </div>
+          </div>
         </div>
 
         {/* table */}
@@ -98,7 +211,7 @@ export default function PlayersPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {players.map((p,i)=>(
+                  {filteredPlayers.map((p,i)=>(
                     <tr key={p._id} onClick={()=>setSel(p)}
                       className="border-b border-gray-800/40 hover:bg-gray-800/30 cursor-pointer transition-colors">
                       <td className="px-4 py-3 text-gray-600 text-xs">{i+1}</td>
@@ -131,7 +244,7 @@ export default function PlayersPage() {
                   ))}
                 </tbody>
               </table>
-              {players.length===0 && <p className="text-center text-gray-600 py-10">No players found</p>}
+              {filteredPlayers.length===0 && <p className="text-center text-gray-600 py-10">No players found</p>}
             </div>
           )}
       </div>

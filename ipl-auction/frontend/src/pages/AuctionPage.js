@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useRoom } from '../context/RoomContext';
-import { auctionAPI, formatPrice, aiAPI } from '../utils/api';
+import { auctionAPI, formatPrice, aiAPI, playersAPI } from '../utils/api';
 import { getSocket } from '../utils/socket';
 import {
   Gavel, Play, Pause, SkipForward, LogOut, Crown, Users,
@@ -13,6 +13,7 @@ import AISuggestionCard from '../components/auction/AISuggestionCard';
 import PlayerComparisonModal from '../components/auction/PlayerComparisonModal';
 import AuctionHeatmapDashboard from '../components/auction/AuctionHeatmapDashboard';
 import VoiceChatPanel from '../components/auction/VoiceChatPanel';
+import PlayerPicker from '../components/auction/PlayerPicker';
 
 /* ─── Countdown ring ───────────────────────────────────────────── */
 function CountdownRing({ seconds, total = 30 }) {
@@ -117,6 +118,9 @@ export default function AuctionPage() {
   const [comparisonOpen, setComparisonOpen] = useState(false);
   const [compareLeftId, setCompareLeftId] = useState('');
   const [compareRightId, setCompareRightId] = useState('');
+  const [allPlayers, setAllPlayers] = useState([]);
+  const [playersLoading, setPlayersLoading] = useState(false);
+  const [playersError, setPlayersError] = useState('');
   const [spendData, setSpendData] = useState(room?.auction?.spendData || []);
   const [voiceJoined, setVoiceJoined] = useState(false);
   const [voiceMuted, setVoiceMuted] = useState(false);
@@ -146,6 +150,27 @@ export default function AuctionPage() {
   useEffect(() => {
     setSpendData(room?.auction?.spendData || []);
   }, [room?.auction?.spendData]);
+
+  useEffect(() => {
+    let alive = true;
+    const load = async () => {
+      setPlayersLoading(true);
+      setPlayersError('');
+      try {
+        const { data } = await playersAPI.getAll({ limit: 2000 });
+        if (!alive) return;
+        setAllPlayers(data?.players || []);
+      } catch (e) {
+        if (!alive) return;
+        setAllPlayers([]);
+        setPlayersError(e?.response?.data?.message || 'Failed to load players');
+      } finally {
+        if (alive) setPlayersLoading(false);
+      }
+    };
+    load();
+    return () => { alive = false; };
+  }, []);
 
   useEffect(() => {
     if (!room?.roomCode || !sessionId) return;
@@ -215,9 +240,30 @@ export default function AuctionPage() {
   const unsoldPool = auction?.unsoldPlayerPool;
   const participants = room?.participants || [];
   const activeTeam = selectedTeam || participants[0] || null;
-  const activeSquad = activeTeam
-    ? soldPlayers.filter(s => s.soldToSession === activeTeam.sessionId)
-    : [];
+  const activeSquad = useMemo(() => {
+    if (!activeTeam) return [];
+    return soldPlayers.filter(s => s.soldToSession === activeTeam.sessionId);
+  }, [activeTeam, soldPlayers]);
+  const groupedActiveSquad = useMemo(() => {
+    const order = [
+      { key: 'Batsman', label: 'Batsmen' },
+      { key: 'All-rounder', label: 'All-Rounders' },
+      { key: 'Wicketkeeper', label: 'Wicketkeepers' },
+      { key: 'Bowler', label: 'Bowlers' },
+    ];
+    const groups = new Map(order.map(o => [o.key, []]));
+    activeSquad.forEach((s) => {
+      const role = s?.player?.role || 'Batsman';
+      if (!groups.has(role)) groups.set(role, []);
+      groups.get(role).push(s);
+    });
+    const out = [];
+    order.forEach(({ key, label }) => {
+      const list = (groups.get(key) || []).slice().sort((a, b) => (b?.soldPrice || 0) - (a?.soldPrice || 0));
+      if (list.length) out.push({ key, label, list });
+    });
+    return out;
+  }, [activeSquad]);
   const round = auction?.currentRound || 1;
   const isRoundBreak = auction?.status === 'round_break';
   const iplTeams = Array.from(new Set((unsoldPool || []).map(p => p.iplTeam || 'Did Not Play'))).sort();
@@ -239,17 +285,9 @@ export default function AuctionPage() {
       }
       return 0;
     });
-  const comparisonCandidates = useMemo(() => {
-    const sold = soldPlayers.map((s) => ({ ...s.player, soldPrice: s.soldPrice }));
-    const map = new Map();
-    [...(unsoldPool || []), ...sold].forEach((p) => {
-      if (!p?._id) return;
-      map.set(String(p._id), p);
-    });
-    return [...map.values()];
-  }, [soldPlayers, unsoldPool]);
-  const leftPlayer = comparisonCandidates.find((p) => String(p._id) === compareLeftId);
-  const rightPlayer = comparisonCandidates.find((p) => String(p._id) === compareRightId);
+  const comparisonCandidates = useMemo(() => allPlayers || [], [allPlayers]);
+  const leftPlayer = comparisonCandidates.find((p) => String(p._id) === String(compareLeftId));
+  const rightPlayer = comparisonCandidates.find((p) => String(p._id) === String(compareRightId));
 
   const ensureAudioElement = (sessionKey, stream) => {
     if (!audioContainerRef.current) return;
@@ -644,25 +682,34 @@ export default function AuctionPage() {
               <div className="border-t border-gray-800 p-3 bg-gray-900/70">
                 <p className="text-xs text-gray-500 mb-2">{activeTeam ? `${activeTeam.teamName} Squad` : 'Select a team to inspect squad'}</p>
                 <div className="max-h-44 overflow-y-auto space-y-2">
-                  {activeSquad.length === 0 && <p className="text-xs text-gray-600 italic">No players acquired yet</p>}
-                  {activeSquad.map((s, idx) => (
-                    <div key={`${s.player?._id || idx}-${idx}`} className="flex items-center gap-2 rounded-lg bg-gray-800/50 border border-gray-700/60 px-2 py-1.5">
-                      <img
-                        src={s.player?.image || `https://placehold.co/32x32/1F2937/white?text=${s.player?.name?.[0] || 'P'}`}
-                        alt={s.player?.name || 'Player'}
-                        className="w-8 h-8 rounded-md object-cover"
-                      />
-                      <div className="flex-1 min-w-0">
-                        <p className="text-xs text-white font-medium truncate">
-                          {s.player?.name || 'Unknown Player'} <span className="text-gray-400">({s.player?.iplTeam || 'Did Not Play'})</span>
-                        </p>
-                        <p className="text-[11px] text-gray-500">
-                          {s.player?.role || 'Unknown role'} · SR {s.player?.stats?.strikeRate ?? s.player?.stats?.sr ?? 0}
-                          {' '}· AVG {s.player?.stats?.average ?? s.player?.stats?.avg ?? 0}
-                          {' '}· Eco {s.player?.stats?.economy ?? s.player?.stats?.eco ?? 0}
-                        </p>
+                  {groupedActiveSquad.length === 0 && <p className="text-xs text-gray-600 italic">No players acquired yet</p>}
+                  {groupedActiveSquad.map((g) => (
+                    <div key={g.key} className="space-y-2">
+                      <div className="flex items-center justify-between pt-1">
+                        <p className="text-[11px] text-gray-400 font-bold uppercase tracking-wider">{g.label} <span className="text-gray-600">({g.list.length})</span></p>
                       </div>
-                      <p className="text-xs text-green-400 font-bold font-display">{formatPrice(s.soldPrice)}</p>
+                      <div className="space-y-2">
+                        {g.list.map((s, idx) => (
+                          <div key={`${s.player?._id || idx}-${idx}`} className="flex items-center gap-2 rounded-lg bg-gray-800/50 border border-gray-700/60 px-2 py-1.5">
+                            <img
+                              src={s.player?.image || `https://placehold.co/32x32/1F2937/white?text=${s.player?.name?.[0] || 'P'}`}
+                              alt={s.player?.name || 'Player'}
+                              className="w-8 h-8 rounded-md object-cover"
+                            />
+                            <div className="flex-1 min-w-0">
+                              <p className="text-xs text-white font-medium truncate">
+                                {s.player?.name || 'Unknown Player'} <span className="text-gray-400">({s.player?.iplTeam || 'Did Not Play'})</span>
+                              </p>
+                              <p className="text-[11px] text-gray-500">
+                                SR {s.player?.stats?.strikeRate ?? s.player?.stats?.sr ?? 0}
+                                {' '}· AVG {s.player?.stats?.average ?? s.player?.stats?.avg ?? 0}
+                                {' '}· Eco {s.player?.stats?.economy ?? s.player?.stats?.eco ?? 0}
+                              </p>
+                            </div>
+                            <p className="text-xs text-green-400 font-bold font-display">{formatPrice(s.soldPrice)}</p>
+                          </div>
+                        ))}
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -670,16 +717,44 @@ export default function AuctionPage() {
             </div>
             <div className="rounded-2xl bg-gray-900/60 border border-gray-800 p-4 space-y-3">
               <h3 className="text-sm font-bold text-white uppercase tracking-wide">Player Comparison</h3>
-              <div className="grid grid-cols-2 gap-2">
-                <select value={compareLeftId} onChange={(e) => setCompareLeftId(e.target.value)} className="px-2 py-2 rounded-lg bg-gray-800 border border-gray-700 text-xs text-white">
-                  <option value="">Select Player A</option>
-                  {comparisonCandidates.map((p) => <option key={p._id} value={p._id}>{p.name}</option>)}
-                </select>
-                <select value={compareRightId} onChange={(e) => setCompareRightId(e.target.value)} className="px-2 py-2 rounded-lg bg-gray-800 border border-gray-700 text-xs text-white">
-                  <option value="">Select Player B</option>
-                  {comparisonCandidates.map((p) => <option key={p._id} value={p._id}>{p.name}</option>)}
-                </select>
+              {playersError && <p className="text-xs text-red-400">{playersError}</p>}
+              <div className="grid grid-cols-1 gap-3">
+                <PlayerPicker
+                  label="Select Player A"
+                  players={comparisonCandidates}
+                  valueId={compareLeftId}
+                  onChangeId={setCompareLeftId}
+                  placeholder={playersLoading ? 'Loading players…' : 'Select Player A'}
+                />
+                <PlayerPicker
+                  label="Select Player B"
+                  players={comparisonCandidates}
+                  valueId={compareRightId}
+                  onChangeId={setCompareRightId}
+                  placeholder={playersLoading ? 'Loading players…' : 'Select Player B'}
+                />
               </div>
+
+              {(leftPlayer || rightPlayer) && (
+                <div className="grid grid-cols-2 gap-2 pt-1">
+                  {[leftPlayer, rightPlayer].map((p, idx) => (
+                    <div key={idx} className="rounded-xl border border-gray-800 bg-gray-800/40 p-3 min-h-20">
+                      {!p ? (
+                        <p className="text-xs text-gray-600 italic">Select a player</p>
+                      ) : (
+                        <>
+                          <p className="text-xs text-white font-semibold truncate">{p.name}</p>
+                          <p className="text-[11px] text-gray-500 truncate">{p.role} · {p.iplTeam || 'Did Not Play'}</p>
+                          <div className="mt-2 grid grid-cols-2 gap-2 text-[11px] text-gray-400">
+                            <p>SR: <span className="text-gray-200 font-semibold">{p?.stats?.strikeRate ?? p?.stats?.sr ?? 0}</span></p>
+                            <p>AVG: <span className="text-gray-200 font-semibold">{p?.stats?.average ?? p?.stats?.avg ?? 0}</span></p>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
               <button
                 onClick={() => setComparisonOpen(true)}
                 disabled={!compareLeftId || !compareRightId}
