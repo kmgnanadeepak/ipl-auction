@@ -6,8 +6,15 @@
 const Room   = require('../models/Room');
 const Player = require('../models/Player');
 const { safeRoom } = require('../routes/rooms');
+const { getBudgetAlert, getTeamSpendData } = require('../services/auctionInsightsService');
 
 const timers = {};   // roomCode → intervalId
+
+function broadcastAuctionInsights(io, roomCode, participants = []) {
+  io.to(roomCode).emit('auction_heatmap_update', {
+    spendData: getTeamSpendData(participants),
+  });
+}
 
 function clearTimer(roomCode) {
   if (timers[roomCode]) { clearInterval(timers[roomCode]); delete timers[roomCode]; }
@@ -226,6 +233,7 @@ async function handleExpiry(io, roomCode) {
       });
       io.to(`${roomCode}:${winSess}`).emit('budget_update', {
         remainingBudget: part?.remainingBudget, newPlayer: player,
+        budgetAlert: part ? getBudgetAlert(part.budget, part.remainingBudget) : null,
       });
     } else {
       // UNSOLD
@@ -241,6 +249,7 @@ async function handleExpiry(io, roomCode) {
       .populate('participants.squad')
       .populate('auction.soldPlayers.player');
     io.to(roomCode).emit('room_updated', { room: safeRoom(refreshed) });
+    broadcastAuctionInsights(io, roomCode, refreshed.participants || []);
     await moveNext(io, roomCode);
   } catch(err) { console.error('[timer expiry]', err.message); }
 }
@@ -377,6 +386,7 @@ exports.startAuction = async (req, res) => {
       status: fresh?.auction?.status,
     });
     io.to(roomCode).emit('auction_started', { room: safeRoom(fresh), remainingTime: dur });
+    broadcastAuctionInsights(io, roomCode, fresh.participants || []);
     startTimer(io, room, dur);
 
     res.json({ success:true });
@@ -506,7 +516,15 @@ exports.placeBid = async (req, res) => {
       remainingTime: dur,
     });
 
-    res.json({ success:true, message:`Bid of ₹${amount}L placed!` });
+    res.json({
+      success: true,
+      message: `Bid of ₹${amount}L placed!`,
+      budget: {
+        totalBudget: part.budget,
+        remainingBudget: part.remainingBudget,
+        alert: getBudgetAlert(part.budget, part.remainingBudget),
+      },
+    });
   } catch(err) { res.status(500).json({ success:false, message:err.message }); }
 };
 

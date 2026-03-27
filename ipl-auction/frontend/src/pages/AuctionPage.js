@@ -1,12 +1,18 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useRoom } from '../context/RoomContext';
-import { auctionAPI, formatPrice } from '../utils/api';
+import { auctionAPI, formatPrice, aiAPI } from '../utils/api';
+import { getSocket } from '../utils/socket';
 import {
   Gavel, Play, Pause, SkipForward, LogOut, Crown, Users,
   TrendingUp, ChevronRight, Zap, Flag,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
+import BudgetAlertBanner from '../components/auction/BudgetAlertBanner';
+import AISuggestionCard from '../components/auction/AISuggestionCard';
+import PlayerComparisonModal from '../components/auction/PlayerComparisonModal';
+import AuctionHeatmapDashboard from '../components/auction/AuctionHeatmapDashboard';
+import VoiceChatPanel from '../components/auction/VoiceChatPanel';
 
 /* ─── Countdown ring ───────────────────────────────────────────── */
 function CountdownRing({ seconds, total = 30 }) {
@@ -106,6 +112,21 @@ export default function AuctionPage() {
   const [searchTerm, setSearchTerm] = useState('');
   const [sortBy, setSortBy] = useState('rating_desc');
   const [startingRound, setStartingRound] = useState(false);
+  const [suggestion, setSuggestion] = useState(null);
+  const [loadingSuggestion, setLoadingSuggestion] = useState(false);
+  const [comparisonOpen, setComparisonOpen] = useState(false);
+  const [compareLeftId, setCompareLeftId] = useState('');
+  const [compareRightId, setCompareRightId] = useState('');
+  const [spendData, setSpendData] = useState(room?.auction?.spendData || []);
+  const [voiceJoined, setVoiceJoined] = useState(false);
+  const [voiceMuted, setVoiceMuted] = useState(false);
+  const [voiceParticipants, setVoiceParticipants] = useState([]);
+  const peerConnectionsRef = useRef({});
+  const localStreamRef = useRef(null);
+  const audioContainerRef = useRef(null);
+
+  const socket = getSocket();
+  const stunServerUrl = process.env.REACT_APP_STUN_SERVER || 'stun:stun.l.google.com:19302';
 
   useEffect(() => {
     if (!lastBid) return;
@@ -121,6 +142,34 @@ export default function AuctionPage() {
       setTimeout(() => navigate('/results'), 1600);
     }
   }, [auctionState?.status, room?.auction?.status, navigate]);
+
+  useEffect(() => {
+    setSpendData(room?.auction?.spendData || []);
+  }, [room?.auction?.spendData]);
+
+  useEffect(() => {
+    if (!room?.roomCode || !sessionId) return;
+    let cancelled = false;
+    const refreshSuggestion = async () => {
+      try {
+        setLoadingSuggestion(true);
+        const { data } = await aiAPI.suggestion(room.roomCode, sessionId);
+        if (!cancelled) setSuggestion(data?.suggestion || null);
+      } catch (_) {
+        if (!cancelled) setSuggestion(null);
+      } finally {
+        if (!cancelled) setLoadingSuggestion(false);
+      }
+    };
+    refreshSuggestion();
+    return () => { cancelled = true; };
+  }, [room?.roomCode, sessionId, auctionState?.currentHighestBid, auctionState?.soldPlayers?.length, room?.auction?.currentHighestBid, room?.auction?.soldPlayers?.length]);
+
+  useEffect(() => {
+    const onHeatmap = ({ spendData: nextSpendData }) => setSpendData(nextSpendData || []);
+    socket.on('auction_heatmap_update', onHeatmap);
+    return () => socket.off('auction_heatmap_update', onHeatmap);
+  }, [socket]);
 
   const auction    = auctionState || room?.auction;
   const player     = auction?.currentPlayer;
@@ -146,7 +195,12 @@ export default function AuctionPage() {
     if (amount < curBid + minInc) return toast.error(`Minimum increment is ${formatPrice(minInc)}`);
     if (amount > myBudget) return toast.error(`Insufficient budget. You have ${formatPrice(myBudget)}`);
     setBidding(true);
-    try { await auctionAPI.bid(room.roomCode, { sessionId, amount }); }
+    try {
+      const { data } = await auctionAPI.bid(room.roomCode, { sessionId, amount });
+      const alert = data?.budget?.alert;
+      if (alert?.level === 'critical') toast.error(alert.message);
+      if (alert?.level === 'warning') toast(alert.message, { icon: '⚠️' });
+    }
     catch (err) { toast.error(err.response?.data?.message || 'Bid failed'); }
     finally { setBidding(false); }
   };
@@ -157,7 +211,7 @@ export default function AuctionPage() {
     placeBid(amt); setCustomBid('');
   };
 
-  const soldPlayers = auction?.soldPlayers || [];
+  const soldPlayers = useMemo(() => auction?.soldPlayers || [], [auction?.soldPlayers]);
   const unsoldPool = auction?.unsoldPlayerPool;
   const participants = room?.participants || [];
   const activeTeam = selectedTeam || participants[0] || null;
@@ -185,6 +239,135 @@ export default function AuctionPage() {
       }
       return 0;
     });
+  const comparisonCandidates = useMemo(() => {
+    const sold = soldPlayers.map((s) => ({ ...s.player, soldPrice: s.soldPrice }));
+    const map = new Map();
+    [...(unsoldPool || []), ...sold].forEach((p) => {
+      if (!p?._id) return;
+      map.set(String(p._id), p);
+    });
+    return [...map.values()];
+  }, [soldPlayers, unsoldPool]);
+  const leftPlayer = comparisonCandidates.find((p) => String(p._id) === compareLeftId);
+  const rightPlayer = comparisonCandidates.find((p) => String(p._id) === compareRightId);
+
+  const ensureAudioElement = (sessionKey, stream) => {
+    if (!audioContainerRef.current) return;
+    let el = document.getElementById(`voice-audio-${sessionKey}`);
+    if (!el) {
+      el = document.createElement('audio');
+      el.id = `voice-audio-${sessionKey}`;
+      el.autoplay = true;
+      audioContainerRef.current.appendChild(el);
+    }
+    el.srcObject = stream;
+  };
+
+  const createPeerConnection = useCallback(async (targetSessionId, shouldCreateOffer = false) => {
+    if (!localStreamRef.current || !room?.roomCode) return null;
+    if (peerConnectionsRef.current[targetSessionId]) return peerConnectionsRef.current[targetSessionId];
+
+    const pc = new RTCPeerConnection({
+      iceServers: [{ urls: stunServerUrl }],
+    });
+
+    localStreamRef.current.getTracks().forEach((track) => pc.addTrack(track, localStreamRef.current));
+    pc.onicecandidate = (event) => {
+      if (!event.candidate) return;
+      socket.emit('voice_ice_candidate', {
+        roomCode: room.roomCode,
+        to: targetSessionId,
+        from: sessionId,
+        candidate: event.candidate,
+      });
+    };
+    pc.ontrack = (event) => ensureAudioElement(targetSessionId, event.streams[0]);
+    peerConnectionsRef.current[targetSessionId] = pc;
+
+    if (shouldCreateOffer) {
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      socket.emit('voice_offer', {
+        roomCode: room.roomCode,
+        to: targetSessionId,
+        from: sessionId,
+        offer,
+      });
+    }
+    return pc;
+  }, [room?.roomCode, sessionId, socket, stunServerUrl]);
+
+  useEffect(() => {
+    const onVoiceParticipants = async ({ participants }) => {
+      setVoiceParticipants(participants || []);
+      if (!voiceJoined) return;
+      for (const peerId of participants || []) {
+        if (peerId === socket.id) continue;
+        await createPeerConnection(peerId, true);
+      }
+    };
+    const onVoiceOffer = async ({ to, from, offer }) => {
+      if (to !== socket.id) return;
+      const pc = await createPeerConnection(from, false);
+      await pc.setRemoteDescription(new RTCSessionDescription(offer));
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      socket.emit('voice_answer', { roomCode: room?.roomCode, to: from, from: socket.id, answer });
+    };
+    const onVoiceAnswer = async ({ to, from, answer }) => {
+      if (to !== socket.id) return;
+      const pc = peerConnectionsRef.current[from];
+      if (!pc) return;
+      await pc.setRemoteDescription(new RTCSessionDescription(answer));
+    };
+    const onVoiceIce = async ({ to, from, candidate }) => {
+      if (to !== socket.id) return;
+      const pc = peerConnectionsRef.current[from] || (await createPeerConnection(from, false));
+      if (!pc) return;
+      await pc.addIceCandidate(new RTCIceCandidate(candidate));
+    };
+    socket.on('voice_participants', onVoiceParticipants);
+    socket.on('voice_offer', onVoiceOffer);
+    socket.on('voice_answer', onVoiceAnswer);
+    socket.on('voice_ice_candidate', onVoiceIce);
+    return () => {
+      socket.off('voice_participants', onVoiceParticipants);
+      socket.off('voice_offer', onVoiceOffer);
+      socket.off('voice_answer', onVoiceAnswer);
+      socket.off('voice_ice_candidate', onVoiceIce);
+    };
+  }, [socket, room?.roomCode, voiceJoined, sessionId, createPeerConnection]);
+
+  const joinVoice = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      localStreamRef.current = stream;
+      setVoiceJoined(true);
+      socket.emit('voice_join', { roomCode: room.roomCode, sessionId: socket.id, teamName: me?.teamName });
+    } catch (_) {
+      toast.error('Microphone permission denied');
+    }
+  };
+
+  const leaveVoice = () => {
+    setVoiceJoined(false);
+    setVoiceParticipants([]);
+    socket.emit('voice_leave', { roomCode: room.roomCode, sessionId: socket.id });
+    Object.values(peerConnectionsRef.current).forEach((pc) => pc.close());
+    peerConnectionsRef.current = {};
+    if (localStreamRef.current) {
+      localStreamRef.current.getTracks().forEach((track) => track.stop());
+      localStreamRef.current = null;
+    }
+    if (audioContainerRef.current) audioContainerRef.current.innerHTML = '';
+  };
+
+  const toggleMute = () => {
+    if (!localStreamRef.current) return;
+    const nextMuted = !voiceMuted;
+    localStreamRef.current.getAudioTracks().forEach((track) => { track.enabled = !nextMuted; });
+    setVoiceMuted(nextMuted);
+  };
 
   useEffect(() => {
     if (isRoundBreak && isHost) {
@@ -354,6 +537,7 @@ export default function AuctionPage() {
                   </div>
                 )}
               </div>
+              <BudgetAlertBanner alert={me?.budgetAlert} />
 
               {isActive && !iAmWinner && (
                 <div className="space-y-3">
@@ -387,6 +571,8 @@ export default function AuctionPage() {
               {isPaused && <p className="text-center text-yellow-400/70 text-sm py-2">⏸ Auction paused</p>}
               {isRoundBreak && <p className="text-center text-blue-300/80 text-sm py-2">Round ended. Waiting for next round setup.</p>}
             </div>
+            <AISuggestionCard suggestion={suggestion} loading={loadingSuggestion} />
+            <AuctionHeatmapDashboard spendData={spendData} />
           </div>
 
           {/* Bid history + teams */}
@@ -482,9 +668,38 @@ export default function AuctionPage() {
                 </div>
               </div>
             </div>
+            <div className="rounded-2xl bg-gray-900/60 border border-gray-800 p-4 space-y-3">
+              <h3 className="text-sm font-bold text-white uppercase tracking-wide">Player Comparison</h3>
+              <div className="grid grid-cols-2 gap-2">
+                <select value={compareLeftId} onChange={(e) => setCompareLeftId(e.target.value)} className="px-2 py-2 rounded-lg bg-gray-800 border border-gray-700 text-xs text-white">
+                  <option value="">Select Player A</option>
+                  {comparisonCandidates.map((p) => <option key={p._id} value={p._id}>{p.name}</option>)}
+                </select>
+                <select value={compareRightId} onChange={(e) => setCompareRightId(e.target.value)} className="px-2 py-2 rounded-lg bg-gray-800 border border-gray-700 text-xs text-white">
+                  <option value="">Select Player B</option>
+                  {comparisonCandidates.map((p) => <option key={p._id} value={p._id}>{p.name}</option>)}
+                </select>
+              </div>
+              <button
+                onClick={() => setComparisonOpen(true)}
+                disabled={!compareLeftId || !compareRightId}
+                className="w-full px-3 py-2 rounded-lg bg-blue-500/15 border border-blue-500/40 text-blue-300 text-sm disabled:opacity-40"
+              >
+                Compare Players
+              </button>
+            </div>
+            <VoiceChatPanel
+              joined={voiceJoined}
+              muted={voiceMuted}
+              participants={voiceParticipants}
+              onJoin={joinVoice}
+              onLeave={leaveVoice}
+              onToggleMute={toggleMute}
+            />
           </div>
         </div>
       </div>
+      <div ref={audioContainerRef} />
 
       {isRoundBreak && isHost && (
         <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
@@ -571,6 +786,12 @@ export default function AuctionPage() {
           Waiting for host to select players for the next round...
         </div>
       )}
+      <PlayerComparisonModal
+        open={comparisonOpen}
+        onClose={() => setComparisonOpen(false)}
+        leftPlayer={leftPlayer}
+        rightPlayer={rightPlayer}
+      />
     </div>
   );
 }

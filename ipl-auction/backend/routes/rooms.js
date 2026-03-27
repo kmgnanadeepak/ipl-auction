@@ -3,6 +3,7 @@ const router = express.Router();
 const { v4: uuidv4 } = require('uuid');
 const Room   = require('../models/Room');
 const Player = require('../models/Player');
+const { getBudgetAlert, getTeamSpendData } = require('../services/auctionInsightsService');
 
 const COLORS = ['#FFD700','#FF6B00','#004BA0','#1B5E20','#B71C1C',
                 '#4A148C','#006064','#F57F17','#880E4F','#01579B',
@@ -141,6 +142,7 @@ router.put('/:code/config', async (req, res) => {
 /* ── safe serialiser (never expose sessionIds publicly) ─────────── */
 function safeRoom(room) {
   const obj = room.toObject ? room.toObject() : room;
+  const spendData = getTeamSpendData(obj.participants || []);
   return {
     _id:         obj._id,
     roomCode:    obj.roomCode,
@@ -157,6 +159,7 @@ function safeRoom(room) {
       sessionId: p.sessionId,         // needed for host/self checks on FE
       budget:    p.budget,
       remainingBudget: p.remainingBudget,
+      budgetAlert: getBudgetAlert(p.budget, p.remainingBudget),
       squadSize: (p.squad||[]).length,
       squad: (p.squad || []).map(sp => ({
         _id: sp?._id || sp,
@@ -171,6 +174,7 @@ function safeRoom(room) {
     })),
     auction: {
       ...obj.auction,
+      spendData,
       soldPlayers: (obj.auction?.soldPlayers || []).map(s => ({
         ...s,
         player: s?.player ? {

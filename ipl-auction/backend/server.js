@@ -45,6 +45,7 @@ app.set('io', io);
 app.use('/api/players',                require('./routes/players'));
 app.use('/api/rooms',                  require('./routes/rooms'));
 app.use('/api/rooms/:roomCode/auction',require('./routes/roomAuction'));
+app.use('/api/ai',                     require('./routes/ai'));
 
 // Health check
 app.get('/api/health', (_, res) => {

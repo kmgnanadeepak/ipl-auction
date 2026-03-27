@@ -1,5 +1,6 @@
 const Room = require('../models/Room');
 const { safeRoom } = require('../routes/rooms');
+const { getTeamSpendData } = require('../services/auctionInsightsService');
 
 module.exports = (io) => {
   io.on('connection', (socket) => {
@@ -37,6 +38,9 @@ module.exports = (io) => {
             squadSize: (p.squad||[]).length,
           })),
         });
+        io.to(roomCode).emit('auction_heatmap_update', {
+          spendData: getTeamSpendData(room.participants || []),
+        });
 
         // Send current state to the joining socket
         let remainingTime = 0;
@@ -66,6 +70,40 @@ module.exports = (io) => {
     socket.on('host_announce', ({ roomCode, message }) => {
       io.to(roomCode).emit('announcement', { message });
     });
+
+    /* ── WebRTC voice signaling ─────────────────────────────────── */
+    socket.on('voice_join', ({ roomCode, sessionId, teamName }) => {
+      if (!roomCode || !sessionId) return;
+      socket.join(`voice:${roomCode}`);
+      io.to(`voice:${roomCode}`).emit('voice_participants', {
+        participants: getVoiceParticipants(io, roomCode),
+      });
+      socket.to(`voice:${roomCode}`).emit('voice_user_joined', { sessionId, teamName });
+    });
+
+    socket.on('voice_leave', ({ roomCode, sessionId }) => {
+      if (!roomCode || !sessionId) return;
+      socket.leave(`voice:${roomCode}`);
+      io.to(`voice:${roomCode}`).emit('voice_user_left', { sessionId });
+      io.to(`voice:${roomCode}`).emit('voice_participants', {
+        participants: getVoiceParticipants(io, roomCode),
+      });
+    });
+
+    socket.on('voice_offer', ({ roomCode, to, from, offer }) => {
+      if (!roomCode || !to || !from || !offer) return;
+      io.to(`voice:${roomCode}`).emit('voice_offer', { to, from, offer });
+    });
+
+    socket.on('voice_answer', ({ roomCode, to, from, answer }) => {
+      if (!roomCode || !to || !from || !answer) return;
+      io.to(`voice:${roomCode}`).emit('voice_answer', { to, from, answer });
+    });
+
+    socket.on('voice_ice_candidate', ({ roomCode, to, from, candidate }) => {
+      if (!roomCode || !to || !from || !candidate) return;
+      io.to(`voice:${roomCode}`).emit('voice_ice_candidate', { to, from, candidate });
+    });
   });
 };
 
@@ -87,4 +125,10 @@ async function markOffline(io, roomCode, sessionId) {
       })),
     });
   } catch(e) { /* ignore */ }
+}
+
+function getVoiceParticipants(io, roomCode) {
+  const voiceRoom = io.sockets.adapter.rooms.get(`voice:${roomCode}`);
+  if (!voiceRoom) return [];
+  return [...voiceRoom];
 }

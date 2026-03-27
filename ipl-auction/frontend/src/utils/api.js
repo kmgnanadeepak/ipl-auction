@@ -40,6 +40,10 @@ export const playersAPI = {
   getOne: (id) => api.get(`/players/${id}`),
 };
 
+export const aiAPI = {
+  suggestion: (roomCode, sessionId) => api.get(`/ai/suggestion/${roomCode}`, { params: { sessionId } }),
+};
+
 export const formatPrice = (v) => {
   if (v == null) return '—';
   if (v >= 100) return `₹${(v / 100).toFixed(v % 100 === 0 ? 0 : 1)} Cr`;
