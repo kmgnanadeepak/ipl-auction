@@ -11,8 +11,15 @@ const playerData = require('./players.json');
 
 async function seed() {
   try {
-    await mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/ipl_auction');
-    console.log('✅ Connected to MongoDB');
+    if (!process.env.MONGODB_URI) {
+      throw new Error('Missing required environment variable: MONGODB_URI');
+    }
+    console.log('Connecting to MongoDB for seed...');
+    await mongoose.connect(process.env.MONGODB_URI, {
+      useNewUrlParser: true,
+      useUnifiedTopology: true,
+    });
+    console.log('MongoDB connected (seed)');
 
     // Validate required fields
     const valid = playerData.filter(p => p.name && p.role && p.country && p.basePrice != null);
@@ -71,7 +78,7 @@ async function seed() {
     console.log(`📊 Total in DB: ${await Player.countDocuments()}`);
     process.exit(0);
   } catch (err) {
-    console.error('❌ Seed error:', err.message);
+    console.error('MongoDB connection error (seed):', err);
     process.exit(1);
   }
 }
