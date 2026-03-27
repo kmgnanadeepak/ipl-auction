@@ -23,9 +23,17 @@ exports.getPlayers = async (req, res) => {
       .skip((page - 1) * limit);
 
     const total = await Player.countDocuments(query);
+    console.log('[players] fetch', {
+      query,
+      page: Number(page),
+      limit: Number(limit),
+      returned: players.length,
+      total,
+    });
 
     res.json({ success: true, players, total, pages: Math.ceil(total / limit) });
   } catch (error) {
+    console.error('[players] fetch error:', error);
     res.status(500).json({ success: false, message: error.message });
   }
 };

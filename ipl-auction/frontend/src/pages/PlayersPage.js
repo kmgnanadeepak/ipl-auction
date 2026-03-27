@@ -19,6 +19,7 @@ const statusBadge = {
 export default function PlayersPage() {
   const [players, setPlayers] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
   const [search,  setSearch]  = useState('');
   const [role,    setRole]    = useState('all');
   const [status,  setStatus]  = useState('all');
@@ -26,13 +27,19 @@ export default function PlayersPage() {
 
   const fetch = useCallback(async () => {
     setLoading(true);
+    setError('');
     try {
       const params = { limit: 311 };
       if (role   !== 'all') params.role   = role;
       if (status !== 'all') params.status = status;
       if (search)           params.search = search;
       const { data } = await playersAPI.getAll(params);
+      console.log('[PlayersPage] /api/players response', data);
       setPlayers(data.players || []);
+    } catch (err) {
+      console.error('[PlayersPage] fetch error', err);
+      setPlayers([]);
+      setError(err.response?.data?.message || 'Failed to load players from API');
     } finally { setLoading(false); }
   }, [role, status, search]);
 
@@ -77,6 +84,11 @@ export default function PlayersPage() {
           ? <div className="flex items-center justify-center h-48"><div className="w-8 h-8 border-4 border-yellow-500/20 border-t-yellow-500 rounded-full animate-spin"/></div>
           : (
             <div className="ipl-card overflow-hidden">
+              {error && (
+                <div className="px-4 py-3 text-sm text-red-400 border-b border-red-500/20 bg-red-500/10">
+                  {error}
+                </div>
+              )}
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-gray-800">

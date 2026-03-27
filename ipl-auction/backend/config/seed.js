@@ -9,6 +9,19 @@ dotenv.config();
 const Player   = require('../models/Player');
 const playerData = require('./players.json');
 
+const samplePlayers = [
+  { name: 'Virat Kohli', role: 'Batsman', country: 'India', basePrice: 200, status: 'available', soldPrice: null, iplTeam: 'Royal Challengers Bangalore', rating: 98, category: 'Marquee', stats: { runs: 7263, strikeRate: 130.5, average: 37.2 } },
+  { name: 'Jasprit Bumrah', role: 'Bowler', country: 'India', basePrice: 200, status: 'available', soldPrice: null, iplTeam: 'Mumbai Indians', rating: 96, category: 'Marquee', stats: { wickets: 165, economy: 7.3, average: 22.4 } },
+  { name: 'Ravindra Jadeja', role: 'All-rounder', country: 'India', basePrice: 180, status: 'available', soldPrice: null, iplTeam: 'Chennai Super Kings', rating: 94, category: 'Marquee', stats: { runs: 2800, strikeRate: 128.4, battingAverage: 27.4, wickets: 152, economy: 7.7, bowlingAverage: 30.1 } },
+  { name: 'KL Rahul', role: 'Wicketkeeper', country: 'India', basePrice: 180, status: 'available', soldPrice: null, iplTeam: 'Lucknow Super Giants', rating: 91, category: 'Premium', stats: { runs: 4683, strikeRate: 134.2, average: 45.1 } },
+  { name: 'Rashid Khan', role: 'Bowler', country: 'Afghanistan', basePrice: 180, status: 'available', soldPrice: null, iplTeam: 'Gujarat Titans', rating: 95, category: 'Marquee', stats: { wickets: 149, economy: 6.8, average: 20.6 } },
+  { name: 'Shubman Gill', role: 'Batsman', country: 'India', basePrice: 150, status: 'available', soldPrice: null, iplTeam: 'Gujarat Titans', rating: 92, category: 'Premium', stats: { runs: 3221, strikeRate: 133.7, average: 37.9 } },
+  { name: 'Andre Russell', role: 'All-rounder', country: 'West Indies', basePrice: 160, status: 'available', soldPrice: null, iplTeam: 'Kolkata Knight Riders', rating: 90, category: 'Premium', stats: { runs: 2326, strikeRate: 174.5, battingAverage: 29.4, wickets: 108, economy: 9.1, bowlingAverage: 25.8 } },
+  { name: 'Rishabh Pant', role: 'Wicketkeeper', country: 'India', basePrice: 170, status: 'available', soldPrice: null, iplTeam: 'Delhi Capitals', rating: 89, category: 'Premium', stats: { runs: 3284, strikeRate: 147.8, average: 34.2 } },
+  { name: 'Suryakumar Yadav', role: 'Batsman', country: 'India', basePrice: 170, status: 'available', soldPrice: null, iplTeam: 'Mumbai Indians', rating: 90, category: 'Premium', stats: { runs: 3562, strikeRate: 145.1, average: 32.8 } },
+  { name: 'Bhuvneshwar Kumar', role: 'Bowler', country: 'India', basePrice: 120, status: 'available', soldPrice: null, iplTeam: 'Sunrisers Hyderabad', rating: 84, category: 'General', stats: { wickets: 170, economy: 7.4, average: 27.9 } },
+];
+
 async function seed() {
   try {
     if (!process.env.MONGODB_URI) {
@@ -21,9 +34,10 @@ async function seed() {
     });
     console.log('MongoDB connected (seed)');
 
+    const sourcePlayers = Array.isArray(playerData) && playerData.length > 0 ? playerData : samplePlayers;
     // Validate required fields
-    const valid = playerData.filter(p => p.name && p.role && p.country && p.basePrice != null);
-    const invalid = playerData.length - valid.length;
+    const valid = sourcePlayers.filter(p => p.name && p.role && p.country && p.basePrice != null);
+    const invalid = sourcePlayers.length - valid.length;
     if (invalid) console.warn(`⚠️  Skipping ${invalid} players with missing required fields`);
 
     // Deduplicate by name
